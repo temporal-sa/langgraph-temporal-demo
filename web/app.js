@@ -1,15 +1,98 @@
-// Chat UI for the durable support agent. Vanilla JS, no build step.
-// Talks to whichever gateway BACKEND_URL points at (see config.js + API_CONTRACT.md).
+// Chat UI for the support agent. Vanilla JS, no build step.
+// Talks to whichever gateway the selected backend preset points at.
 
-const API = window.BACKEND_URL;
 const $ = (id) => document.getElementById(id);
+const BACKEND_STORAGE_KEY = 'support-agent.backend';
 
 let conversationId = null;
 let assistantCount = 0; // assistant messages rendered from the server transcript
+let activeBackendId = null;
+let activeBackend = null;
+
+const FALLBACK_BACKENDS = {
+  langgraph: {
+    label: 'LangGraph standalone',
+    url: 'http://localhost:8001',
+    poweredBy: 'Powered by LangGraph',
+    conversationIdLabel: 'conversationId',
+    conversationLinkBase: '',
+  },
+};
+
+const BACKENDS = normalizeBackends(window.AGENT_BACKENDS);
+
+function normalizeBackends(configured) {
+  const source =
+    configured && Object.keys(configured).length
+      ? configured
+      : window.BACKEND_URL
+        ? {
+            configured: {
+              label: 'Configured backend',
+              url: window.BACKEND_URL,
+              poweredBy: window.AGENT_POWERED_BY || 'Powered by the agent backend',
+              conversationIdLabel: window.CONVERSATION_ID_LABEL || 'conversationId',
+              conversationLinkBase: window.CONVERSATION_LINK_BASE || '',
+            },
+          }
+        : FALLBACK_BACKENDS;
+
+  return Object.fromEntries(
+    Object.entries(source).map(([id, backend]) => [
+      id,
+      {
+        id,
+        label: backend.label || id,
+        url: (backend.url || '').replace(/\/$/, ''),
+        poweredBy: backend.poweredBy || 'Powered by the agent backend',
+        conversationIdLabel: backend.conversationIdLabel || 'conversationId',
+        conversationLinkBase: (backend.conversationLinkBase || '').replace(/\/$/, ''),
+      },
+    ]),
+  );
+}
+
+function storageGet(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore private-window or file:// storage failures.
+  }
+}
+
+function initialBackendId() {
+  const requested = new URLSearchParams(window.location.search).get('backend');
+  const configured = window.DEFAULT_AGENT_BACKEND || window.DEFAULT_BACKEND;
+  for (const id of [requested, storageGet(BACKEND_STORAGE_KEY), configured]) {
+    if (id && BACKENDS[id]) return id;
+  }
+  return Object.keys(BACKENDS)[0];
+}
+
+function selectBackend(id, { persist = true, updateUrl = true } = {}) {
+  if (!BACKENDS[id]) return;
+  activeBackendId = id;
+  activeBackend = BACKENDS[id];
+  if (persist) storageSet(BACKEND_STORAGE_KEY, id);
+  if (updateUrl) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('backend', id);
+    window.history.replaceState(null, '', url);
+  }
+  applyConfig();
+}
 
 // ── tiny fetch helper ────────────────────────────────────────────────────────
 async function call(method, path, body) {
-  const res = await fetch(API + path, {
+  const res = await fetch(activeBackend.url + path, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
@@ -117,6 +200,49 @@ function showError(message) {
   setTimeout(() => (el.style.display = 'none'), 6000);
 }
 
+function applyConfig() {
+  document.querySelectorAll('[data-powered-by]').forEach((el) => {
+    el.textContent = activeBackend.poweredBy;
+  });
+  document.querySelectorAll('[data-backend-name]').forEach((el) => {
+    el.textContent = activeBackend.label;
+  });
+}
+
+function setupBackendSelector() {
+  const select = $('backend-select');
+  if (!select) return;
+  select.replaceChildren(
+    ...Object.values(BACKENDS).map((backend) => {
+      const option = document.createElement('option');
+      option.value = backend.id;
+      option.textContent = backend.label;
+      return option;
+    }),
+  );
+  select.value = activeBackendId;
+  select.onchange = () => selectBackend(select.value);
+}
+
+function showConversationId(id) {
+  if (activeBackend.conversationLinkBase) {
+    const link = document.createElement('a');
+    link.href = `${activeBackend.conversationLinkBase}/${encodeURIComponent(id)}`;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.innerHTML = `<span class="label">${activeBackend.conversationIdLabel}:&nbsp;</span>`;
+    link.append(id);
+    $('conv-id').replaceChildren(link);
+    return;
+  }
+
+  const pill = document.createElement('span');
+  pill.className = 'id-pill';
+  pill.innerHTML = `<span class="label">${activeBackend.conversationIdLabel}:&nbsp;</span>`;
+  pill.append(id);
+  $('conv-id').replaceChildren(pill);
+}
+
 // ── approval card (the HITL moment) ─────────────────────────────────────────
 function showApprovalCard(pending) {
   const card = document.createElement('div');
@@ -152,7 +278,7 @@ async function decide(card, approved) {
   }
 }
 
-// After an approval signal the turn resumes server-side; poll until a new
+// After approval the turn resumes server-side; poll until a new
 // assistant message lands (or another approval is requested — multi-purchase turns).
 async function pollUntilSettled(baselineAssistant) {
   for (let i = 0; i < 90; i++) {
@@ -175,7 +301,7 @@ async function pollUntilSettled(baselineAssistant) {
     }
   }
   setBusy(false);
-  showError('Timed out waiting for the agent — check the worker.');
+  showError('Timed out waiting for the agent — check the backend.');
 }
 
 // ── send a message (blocks until the turn settles — see contract) ───────────
@@ -200,7 +326,7 @@ $('composer').onsubmit = async (e) => {
   }
 };
 
-// ── start a conversation (starts the workflow) ──────────────────────────────
+// ── start a conversation ────────────────────────────────────────────────────
 $('start-form').onsubmit = async (e) => {
   e.preventDefault();
   try {
@@ -208,14 +334,7 @@ $('start-form').onsubmit = async (e) => {
       customerEmail: $('email').value.trim(),
     });
     conversationId = id;
-    // clickable workflow ID → opens this conversation's workflow in the Temporal UI
-    const link = document.createElement('a');
-    link.href = `${window.TEMPORAL_UI_BASE}/workflows/${encodeURIComponent(id)}`;
-    link.target = '_blank';
-    link.rel = 'noopener';
-    link.innerHTML = '<span class="label">workflowId:&nbsp;</span>';
-    link.append(id);
-    $('conv-id').replaceChildren(link);
+    showConversationId(id);
     $('start').remove();
     setBusy(false);
     // client-side greeting only — not part of the server transcript, so not counted
@@ -224,3 +343,6 @@ $('start-form').onsubmit = async (e) => {
     showError(err.message);
   }
 };
+
+selectBackend(initialBackendId(), { persist: false, updateUrl: false });
+setupBackendSelector();

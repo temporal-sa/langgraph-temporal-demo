@@ -31,14 +31,14 @@
   #hero h1 { font-size: 40px; font-weight: 300; letter-spacing: .5px; margin: 14px 0 6px; }
   #hero .sub { color: var(--muted); font-size: 15px; margin: 0; }
   #conv-id { display: block; margin-top: 14px; }
-  #conv-id a {
+  #conv-id a, #conv-id .id-pill {
     display: inline-block; text-decoration: none;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 11px; color: var(--muted);
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 999px; padding: 5px 14px;
   }
-  #conv-id a .label { color: var(--muted); opacity: .7; }
+  #conv-id a .label, #conv-id .id-pill .label { color: var(--muted); opacity: .7; }
   #conv-id a:hover { color: var(--text); border-color: var(--purple); }
 
   /* pill bubbles — tone-on-tone, no hard contrast */
@@ -125,6 +125,16 @@
     border-radius: 999px; padding: 13px 22px; font-size: 15px; outline: none; text-align: center;
   }
   #start input:focus { border-color: var(--purple); }
+  #start .backend-field {
+    display: flex; align-items: center; gap: 10px; justify-content: center;
+    color: var(--muted); font-size: 13px;
+  }
+  #start select {
+    flex: 1; min-width: 0;
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 999px; padding: 11px 18px; font-size: 14px; outline: none;
+  }
+  #start select:focus { border-color: var(--purple); }
 
   #error {
     position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
@@ -143,7 +153,7 @@
         <ellipse cx="24" cy="24" rx="20" ry="8.5"/>
       </svg>
       <h1>Customer Support Agent</h1>
-      <p class="sub">Powered by Temporal</p>
+      <p class="sub" data-powered-by>Powered by LangGraph</p>
       <span id="conv-id"></span>
     </div>
   </div>
@@ -163,8 +173,12 @@
       <ellipse cx="24" cy="24" rx="20" ry="8.5"/>
     </svg>
     <h2>Customer Support Agent</h2>
-    <p>Powered by Temporal</p>
+    <p data-powered-by>Powered by LangGraph</p>
     <input id="email" type="email" placeholder="customer email" value="sa@temporal.io" required>
+    <label class="backend-field" for="backend-select">
+      <span>Backend</span>
+      <select id="backend-select"></select>
+    </label>
     <button class="pill" type="submit">Start</button>
   </form>
 </div>
