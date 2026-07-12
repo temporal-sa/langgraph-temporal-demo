@@ -19,6 +19,13 @@ class FakeHandle:
 
 
 class ApiApprovalTests(unittest.IsolatedAsyncioTestCase):
+    def test_production_api_routes_are_registered(self) -> None:
+        routes = api.app.openapi()["paths"]
+
+        self.assertIn("/api/health", routes)
+        self.assertIn("/api/conversations", routes)
+        self.assertIn("/conversations", routes)
+
     async def test_pending_approval_includes_opaque_approval_id(self) -> None:
         handle = FakeHandle()
         with patch.object(api, "_handle", return_value=handle):

@@ -31,7 +31,7 @@ TEMPORAL_LANGGRAPH_WORKER_LOG := /tmp/agent-temporal-langgraph-worker.log
 TEMPORAL_LANGGRAPH_API_LOG := /tmp/agent-temporal-langgraph-api.log
 WEB_LOG := /tmp/agent-web.log
 
-.PHONY: up original langgraph temporal-langgraph down status logs test \
+.PHONY: up compose-up compose-down original langgraph temporal-langgraph down status logs test \
 	postgres temporal worker api langgraph-api temporal-langgraph-worker \
 	temporal-langgraph-api web kill-worker kill-temporal-langgraph-worker \
 	kill-langgraph-api kill-workers kill-db db
@@ -62,7 +62,14 @@ temporal-langgraph: postgres temporal temporal-langgraph-worker temporal-langgra
 	@echo "Temporal + LangGraph backend ready: http://localhost:$(TEMPORAL_LANGGRAPH_API_PORT)"
 
 postgres:
-	docker compose up -d
+	docker compose up -d postgres
+
+compose-up:
+	docker compose up --build -d
+	@echo "containerized app ready: http://localhost:5173"
+
+compose-down:
+	docker compose down
 
 temporal:
 	@if [ -s "$(TEMPORAL_PID)" ] && kill -0 "$$(cat "$(TEMPORAL_PID)")" 2>/dev/null; then \

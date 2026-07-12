@@ -8,7 +8,7 @@ ID, so the gateway can stay stateless.
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -17,7 +17,8 @@ from temporalio.service import RPCError, RPCStatusCode
 
 import config
 from support_agent_common.conversations import new_conversation_id
-from models.types import ApprovalDecision
+from activities.tools import execute_tool_local
+from models.types import ApprovalDecision, ToolRequest
 from workflows.agent import SupportAgentWorkflow
 
 
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+api = APIRouter()
 
 
 @app.exception_handler(HTTPException)
@@ -100,12 +102,23 @@ async def root():
     }
 
 
-@app.get("/healthz")
+@api.get("/health")
+@api.get("/healthz")
 async def healthz():
     return {"ok": True}
 
 
-@app.post("/conversations", status_code=201)
+@app.post("/internal/tools/execute", include_in_schema=False)
+def internal_execute_tool(body: ToolRequest):
+    """Private worker-to-backend tool execution endpoint.
+
+    Kubernetes and Compose expose this only through the backend's internal
+    service; the public ingress routes only the /api prefix.
+    """
+    return {"result": execute_tool_local(body)}
+
+
+@api.post("/conversations", status_code=201)
 async def create_conversation(
     body: CreateConversation, _access: None = Depends(require_demo_access)
 ):
@@ -119,7 +132,7 @@ async def create_conversation(
     return {"conversationId": conversation_id}
 
 
-@app.post("/conversations/{conversation_id}/messages")
+@api.post("/conversations/{conversation_id}/messages")
 async def send_message(
     conversation_id: str,
     body: SendMessage,
@@ -137,7 +150,7 @@ async def send_message(
     return {"status": result.status, "reply": result.reply}
 
 
-@app.get("/conversations/{conversation_id}/transcript")
+@api.get("/conversations/{conversation_id}/transcript")
 async def transcript(
     conversation_id: str, _access: None = Depends(require_demo_access)
 ):
@@ -148,7 +161,7 @@ async def transcript(
     return {"messages": [{"role": m.role, "content": m.content} for m in messages]}
 
 
-@app.get("/conversations/{conversation_id}/pending-approval")
+@api.get("/conversations/{conversation_id}/pending-approval")
 async def pending_approval(
     conversation_id: str, _access: None = Depends(require_demo_access)
 ):
@@ -169,7 +182,7 @@ async def pending_approval(
     }
 
 
-@app.post("/conversations/{conversation_id}/approve", status_code=202)
+@api.post("/conversations/{conversation_id}/approve", status_code=202)
 async def approve(
     conversation_id: str,
     body: Approve,
@@ -188,3 +201,9 @@ async def approve(
     except RPCError as e:
         _not_found(e)
     return {}
+
+
+# Keep the original endpoint surface for source-only local development while
+# exposing the same API under /api for Compose and Kubernetes.
+app.include_router(api)
+app.include_router(api, prefix="/api")

@@ -14,7 +14,7 @@ Use separate terminals from the repository root.
 Start Postgres:
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
 ```
 
 Start Temporal:
@@ -52,6 +52,8 @@ Use the same repo-root `.env` values as the original demo:
 - `TEMPORAL_API_KEY`, `TEMPORAL_TLS`, `TEMPORAL_TLS_CERT`, `TEMPORAL_TLS_KEY` for Temporal Cloud
 - `LANGGRAPH_TEMPORAL_TASK_QUEUE` to override the default task queue
 - `DB_URL`
+- `BACKEND_URL` on deployed workers, pointing to the private backend service;
+  leave unset for direct-database source runs
 - `LLM_PROVIDER=anthropic` or `LLM_PROVIDER=openai`
 - `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`
 - `ANTHROPIC_MODEL`
@@ -99,7 +101,7 @@ docker build -f docker/backend.Dockerfile -t langgraph-temporal-demo-backend .
 Run the API:
 
 ```bash
-docker run --rm -p 8002:8002 --env-file .env langgraph-temporal-demo-backend
+docker run --rm -p 8002:8000 --env-file .env langgraph-temporal-demo-backend
 ```
 
 Run the worker with the same image:
@@ -108,8 +110,9 @@ Run the worker with the same image:
 docker run --rm --env-file .env langgraph-temporal-demo-backend python worker.py
 ```
 
-For production, set `TEMPORAL_ADDRESS` and `DB_URL` to routable service or
-managed endpoints. Do not use `localhost` in demo cloud deployment config.
+For production, set `TEMPORAL_ADDRESS`, `DB_URL`, and `BACKEND_URL` to routable
+Cloud or ClusterIP endpoints. Do not use `localhost` in deployment config. The
+public API is also available under `/api`, including `GET /api/health`.
 
 ## Docker Operations
 
@@ -119,7 +122,7 @@ The music catalog and customer data live in the Postgres container defined in
 Start the database:
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
 ```
 
 Check status:
@@ -156,7 +159,7 @@ Reset the database to the seed SQL files:
 
 ```bash
 docker compose down -v
-docker compose up -d
+docker compose up -d postgres
 ```
 
 ## Simulate OpenAI API Failures

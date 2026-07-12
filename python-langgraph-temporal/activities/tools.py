@@ -1,16 +1,42 @@
-"""The EXECUTE TOOLS step: run tool calls against the Chinook database.
+"""The EXECUTE TOOLS step: run tool calls through the backend or locally.
 
 Business errors such as unknown customers or bad track IDs return as
 model-visible tool results so the agent can explain them.
 """
 
 import json
+import urllib.request
 
+import config
 import db
 from models.types import ToolRequest
 
 
 def execute_tool(req: ToolRequest) -> str:
+    """Execute from a worker activity.
+
+    Deployed workers use the backend's private ClusterIP URL. Leaving
+    BACKEND_URL unset preserves the original direct-database local path.
+    """
+    if config.BACKEND_URL:
+        return _execute_remote(req)
+    return execute_tool_local(req)
+
+
+def _execute_remote(req: ToolRequest) -> str:
+    request = urllib.request.Request(
+        f"{config.BACKEND_URL}/internal/tools/execute",
+        data=req.model_dump_json().encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=25) as response:
+        payload = json.loads(response.read())
+    return str(payload["result"])
+
+
+def execute_tool_local(req: ToolRequest) -> str:
+    """Execute inside the backend process against its configured database."""
     name, args = req.call.name, req.call.args
     try:
         if name == "search_music":

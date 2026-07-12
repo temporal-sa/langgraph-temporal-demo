@@ -23,6 +23,11 @@ TEMPORAL_TLS_KEY = os.getenv("TEMPORAL_TLS_KEY")
 # Database — docker compose up -d (local) or an in-cluster Service (EKS).
 DB_URL = os.getenv("DB_URL", "postgresql://demo:demo@localhost:5432/chinook")
 
+# When set on the worker, tool activities call the private backend service
+# instead of connecting to Postgres directly. Source-only local runs can leave
+# this unset and keep the original direct-database behavior.
+BACKEND_URL = os.getenv("BACKEND_URL", "").rstrip("/")
+
 
 def _bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)

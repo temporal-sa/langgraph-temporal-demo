@@ -7,7 +7,7 @@ js_escape() {
 
 temporal_backend_url="$(js_escape "${TEMPORAL_BACKEND_URL:-}")"
 langgraph_backend_url="$(js_escape "${LANGGRAPH_BACKEND_URL:-}")"
-temporal_langgraph_backend_url="$(js_escape "${TEMPORAL_LANGGRAPH_BACKEND_URL:-http://localhost:8002}")"
+temporal_langgraph_backend_url="$(js_escape "${TEMPORAL_LANGGRAPH_BACKEND_URL:-/api}")"
 temporal_ui_url="$(js_escape "${TEMPORAL_UI_URL:-}")"
 default_backend="$(js_escape "${DEFAULT_AGENT_BACKEND:-temporal-langgraph}")"
 
@@ -21,6 +21,11 @@ write_separator() {
 }
 
 write_temporal_backend() {
+  if [ -n "$temporal_ui_url" ]; then
+    conversation_link_base="${temporal_ui_url}/namespaces/default/workflows"
+  else
+    conversation_link_base=""
+  fi
   write_separator
   cat <<EOF
   temporal: {
@@ -28,12 +33,17 @@ write_temporal_backend() {
     url: "${temporal_backend_url}",
     poweredBy: 'Powered by Temporal Workflow',
     conversationIdLabel: 'workflowId',
-    conversationLinkBase: "${temporal_ui_url}/namespaces/default/workflows",
+    conversationLinkBase: "${conversation_link_base}",
   }
 EOF
 }
 
 write_temporal_langgraph_backend() {
+  if [ -n "$temporal_ui_url" ]; then
+    conversation_link_base="${temporal_ui_url}/namespaces/default/workflows"
+  else
+    conversation_link_base=""
+  fi
   write_separator
   cat <<EOF
   'temporal-langgraph': {
@@ -41,7 +51,7 @@ write_temporal_langgraph_backend() {
     url: "${temporal_langgraph_backend_url}",
     poweredBy: 'Powered by Temporal + LangGraph',
     conversationIdLabel: 'workflowId',
-    conversationLinkBase: "${temporal_ui_url}/namespaces/default/workflows",
+    conversationLinkBase: "${conversation_link_base}",
   }
 EOF
 }

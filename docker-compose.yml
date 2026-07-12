@@ -1,12 +1,99 @@
 services:
   postgres:
-    image: postgres:16
+    build:
+      context: .
+      dockerfile: docker/postgres.Dockerfile
+    image: langgraph-temporal-demo-postgres:local
     container_name: chinook-postgres
     environment:
-      POSTGRES_USER: demo
-      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: ${POSTGRES_INIT_DB:-postgres}
+      POSTGRES_USER: ${POSTGRES_USER:-demo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-demo}
     ports:
-      - "5432:5432"
+      - "${COMPOSE_POSTGRES_PORT:-5432}:5432"
     volumes:
-      - ./db/chinook.sql:/docker-entrypoint-initdb.d/01-chinook.sql:ro
-      - ./db/demo-customer.sql:/docker-entrypoint-initdb.d/02-demo-customer.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    image: langgraph-temporal-demo-app:local
+    command: ["python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      PORT: "8000"
+      TEMPORAL_ADDRESS: ${COMPOSE_TEMPORAL_ADDRESS:-host.docker.internal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_API_KEY: ${TEMPORAL_API_KEY:-}
+      TEMPORAL_TLS: ${TEMPORAL_TLS:-false}
+      LANGGRAPH_TEMPORAL_TASK_QUEUE: ${LANGGRAPH_TEMPORAL_TASK_QUEUE:-support-agent-temporal-langgraph}
+      DB_URL: postgresql://${POSTGRES_USER:-demo}:${POSTGRES_PASSWORD_URLENCODED:-${POSTGRES_PASSWORD:-demo}}@postgres:5432/${APP_DB_NAME:-chinook}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      DEMO_ACCESS_TOKEN: ${DEMO_ACCESS_TOKEN:-}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+    ports:
+      - "${COMPOSE_API_PORT:-8002}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  worker:
+    image: langgraph-temporal-demo-app:local
+    command: ["python", "worker.py"]
+    environment:
+      TEMPORAL_ADDRESS: ${COMPOSE_TEMPORAL_ADDRESS:-host.docker.internal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_API_KEY: ${TEMPORAL_API_KEY:-}
+      TEMPORAL_TLS: ${TEMPORAL_TLS:-false}
+      LANGGRAPH_TEMPORAL_TASK_QUEUE: ${LANGGRAPH_TEMPORAL_TASK_QUEUE:-support-agent-temporal-langgraph}
+      BACKEND_URL: http://backend:8000
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    image: langgraph-temporal-demo-frontend:local
+    environment:
+      WEB_PORT: "8080"
+      BACKEND_URL: http://backend:8000
+      DEFAULT_AGENT_BACKEND: temporal-langgraph
+      TEMPORAL_LANGGRAPH_BACKEND_URL: /api
+      TEMPORAL_UI_URL: ${TEMPORAL_UI_URL:-http://localhost:8233}
+    ports:
+      - "${COMPOSE_WEB_PORT:-5173}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
