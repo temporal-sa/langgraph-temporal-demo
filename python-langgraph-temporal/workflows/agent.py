@@ -1,8 +1,8 @@
 """Temporal workflow that runs the support-agent LangGraph graph.
 
-The LangGraph nodes run through temporalio.contrib.langgraph. The Workflow keeps
-conversation state and human approval state; the plugin turns the graph's LLM
-and tool nodes into Temporal Activities.
+The LangGraph nodes run through temporalio.contrib.langgraph. LangGraph's
+native interrupt/Command API owns the human approval pause and resume, while
+the plugin turns the graph's LLM and tool nodes into Temporal Activities.
 """
 
 from typing import Any
@@ -10,6 +10,10 @@ from typing import Any
 from temporalio import workflow
 
 with workflow.unsafe.imports_passed_through():
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command, GraphOutput
+
     from graph.agent import GRAPH_NAME, AgentState
     from models.types import ApprovalDecision, ChatMessage, PendingPurchase, TurnResult
     from prompts import system_prompt
@@ -20,6 +24,8 @@ with workflow.unsafe.imports_passed_through():
 class SupportAgentWorkflow:
     def __init__(self) -> None:
         self.state: AgentState | None = None
+        self.pending_purchase: PendingPurchase | None = None
+        self.graph_input: AgentState | Command | None = None
         self.turn_in_progress = False
 
     @workflow.run
@@ -27,18 +33,30 @@ class SupportAgentWorkflow:
         self.state = {
             "customer_email": customer_email,
             "messages": [
-                ChatMessage(role="system", content=system_prompt(customer_email))
+                ChatMessage(
+                    role="system", content=system_prompt(customer_email)
+                ).model_dump(mode="json")
             ],
-            "pending_purchase": None,
-            "waiting_call": None,
-            "remaining_calls": [],
-            "approval": None,
         }
 
-        app = graph(GRAPH_NAME).compile()
+        app = graph(GRAPH_NAME).compile(checkpointer=InMemorySaver())
+        config = RunnableConfig(
+            {"configurable": {"thread_id": workflow.info().workflow_id}}
+        )
         while True:
             await workflow.wait_condition(lambda: self.turn_in_progress)
-            self.state = await app.ainvoke(self.state)
+            graph_input = self.graph_input
+            if graph_input is None:
+                raise RuntimeError("graph input is not initialized")
+
+            result: GraphOutput = await app.ainvoke(
+                graph_input,
+                config,
+                version="v2",
+            )
+            self.state = _agent_state(result.value)
+            self.pending_purchase = _pending_from_interrupts(result.interrupts)
+            self.graph_input = None
             self.turn_in_progress = False
 
     @workflow.update
@@ -46,32 +64,24 @@ class SupportAgentWorkflow:
         await workflow.wait_condition(lambda: self.state is not None)
         state = self._state()
         if self.turn_in_progress:
-            await workflow.wait_condition(
-                lambda: not self.turn_in_progress
-                or (
-                    self.state is not None
-                    and self.state["pending_purchase"] is not None
-                )
-            )
+            await workflow.wait_condition(lambda: not self.turn_in_progress)
             state = self._state()
-        if state["pending_purchase"] is not None:
+        if self.pending_purchase is not None:
             raise RuntimeError("purchase approval is still pending")
 
         turn_start = len(state["messages"])
-        self.state = {
+        self.graph_input = {
             **state,
-            "messages": [*state["messages"], ChatMessage(role="user", content=text)],
-            "approval": None,
+            "messages": [
+                *state["messages"],
+                ChatMessage(role="user", content=text).model_dump(mode="json"),
+            ],
         }
         self.turn_in_progress = True
-        await workflow.wait_condition(
-            lambda: not self.turn_in_progress
-            or self._state()["pending_purchase"] is not None
-        )
+        await workflow.wait_condition(lambda: not self.turn_in_progress)
 
-        state = self._state()
         reply = self._last_assistant_text(since=turn_start)
-        if state["pending_purchase"] is not None:
+        if self.pending_purchase is not None:
             return TurnResult(status="awaiting_approval", reply=reply)
         return TurnResult(status="reply", reply=reply)
 
@@ -81,16 +91,14 @@ class SupportAgentWorkflow:
     ) -> None:
         if self.state is None:
             raise RuntimeError("workflow state is not initialized")
-        pending = _pending_purchase(self.state["pending_purchase"])
+        pending = self.pending_purchase
         if pending is None:
             raise RuntimeError("nothing pending")
         if pending.approval_id != approval_id:
             raise RuntimeError("approval request is stale")
-        self.state = {
-            **self.state,
-            "approval": decision,
-            "pending_purchase": None,
-        }
+
+        self.graph_input = Command(resume=decision.model_dump(mode="json"))
+        self.pending_purchase = None
         self.turn_in_progress = True
 
     @workflow.query
@@ -105,9 +113,7 @@ class SupportAgentWorkflow:
 
     @workflow.query
     def pending_approval(self) -> PendingPurchase | None:
-        if self.state is None:
-            return None
-        return _pending_purchase(self.state["pending_purchase"])
+        return self.pending_purchase
 
     def _state(self) -> AgentState:
         if self.state is None:
@@ -119,6 +125,7 @@ class SupportAgentWorkflow:
             if message.role == "assistant" and message.content:
                 return message.content
         return ""
+
 
 def _messages(values: list[ChatMessage | dict[str, Any]]) -> list[ChatMessage]:
     return [_message(value) for value in values]
@@ -136,3 +143,18 @@ def _pending_purchase(
     if value is None or isinstance(value, PendingPurchase):
         return value
     return PendingPurchase.model_validate(value)
+
+
+def _agent_state(value: dict[str, Any]) -> AgentState:
+    return {
+        "customer_email": str(value["customer_email"]),
+        "messages": [
+            message.model_dump(mode="json") for message in _messages(value["messages"])
+        ],
+    }
+
+
+def _pending_from_interrupts(interrupts: tuple) -> PendingPurchase | None:
+    if not interrupts:
+        return None
+    return _pending_purchase(interrupts[0].value)

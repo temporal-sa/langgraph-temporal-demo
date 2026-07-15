@@ -1,13 +1,17 @@
 """LangGraph support agent.
 
-This is the standalone agent runtime. LangGraph owns the ReAct loop; FastAPI or
-the CLI owns conversation storage and user interaction.
+This is the standalone agent runtime. LangGraph owns the ReAct loop and native
+human-in-the-loop interrupts; FastAPI or the CLI owns conversation storage and
+user interaction.
 """
 
 import asyncio
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, GraphOutput, interrupt
 
 from activities.llm import call_llm
 from activities.tools import execute_tool
@@ -37,64 +41,28 @@ class StaleApprovalError(RuntimeError):
 
 class AgentState(TypedDict):
     customer_email: str
-    messages: list[ChatMessage]
-    pending_purchase: PendingPurchase | None
-    waiting_call: ToolCall | None
-    remaining_calls: list[ToolCall]
-    approval: ApprovalDecision | None
+    messages: list[dict[str, Any]]
 
 
 async def _plan(state: AgentState) -> dict:
-    response = await call_llm(LLMRequest(messages=state["messages"]))
-    return {"messages": [*state["messages"], response.message]}
+    messages = _messages(state["messages"])
+    response = await call_llm(LLMRequest(messages=messages))
+    return {"messages": _message_dicts([*messages, response.message])}
 
 
 def _route_after_plan(state: AgentState) -> Literal["tools", "__end__"]:
-    last_message = state["messages"][-1]
+    last_message = _message(state["messages"][-1])
     return "tools" if last_message.tool_calls else END
 
 
-def _route_from_start(state: AgentState) -> Literal["plan", "tools"]:
-    if state.get("waiting_call") is not None and state.get("approval") is not None:
-        return "tools"
-    return "plan"
-
-
-def _route_after_tools(state: AgentState) -> Literal["plan", "__end__"]:
-    return END if state.get("pending_purchase") is not None else "plan"
-
-
 def _execute_tools(state: AgentState) -> dict:
-    messages = list(state["messages"])
-    calls = _calls_to_process(state)
-    update = {
-        "messages": messages,
-        "pending_purchase": None,
-        "waiting_call": None,
-        "remaining_calls": [],
-        "approval": None,
-    }
+    messages = _messages(state["messages"])
+    calls = list(messages[-1].tool_calls)
+    approvals = _review_purchases(calls, message_count=len(messages))
 
-    while calls:
-        call = calls.pop(0)
-
-        if call.name == "purchase_tracks" and state.get("approval") is None:
-            return {
-                **update,
-                "messages": messages,
-                "pending_purchase": PendingPurchase(
-                    approval_id=f"{call.id}:{len(messages)}",
-                    track_ids=call.args.get("track_ids", []),
-                    description=call.args.get("summary"),
-                ),
-                "waiting_call": call,
-                "remaining_calls": calls,
-            }
-
+    for call in calls:
         if call.name == "purchase_tracks":
-            decision = state["approval"]
-            if decision is None:
-                raise PendingApprovalError("purchase approval is required")
+            decision = approvals[call.id]
             if decision.approved:
                 result = execute_tool(
                     ToolRequest(call=call, customer_email=state["customer_email"])
@@ -108,55 +76,66 @@ def _execute_tools(state: AgentState) -> dict:
             )
 
         messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
-        state = {**state, "approval": None}
 
-    return update
+    return {"messages": _message_dicts(messages)}
 
 
-def _calls_to_process(state: AgentState) -> list[ToolCall]:
-    waiting_call = state.get("waiting_call")
-    if waiting_call is not None:
-        return [waiting_call, *state.get("remaining_calls", [])]
-    return list(state["messages"][-1].tool_calls)
+def _review_purchases(
+    calls: list[ToolCall], *, message_count: int
+) -> dict[str, ApprovalDecision]:
+    """Collect every approval before executing any tool side effects."""
+    approvals: dict[str, ApprovalDecision] = {}
+    for call in calls:
+        if call.name != "purchase_tracks":
+            continue
+        pending = PendingPurchase(
+            approval_id=f"{call.id}:{message_count}",
+            track_ids=call.args.get("track_ids", []),
+            description=call.args.get("summary"),
+        )
+        resume_value = interrupt(pending.model_dump(mode="json"))
+        approvals[call.id] = ApprovalDecision.model_validate(resume_value)
+    return approvals
 
 
 def build_graph():
     builder = StateGraph(AgentState)
     builder.add_node("plan", _plan)
     builder.add_node("tools", _execute_tools)
-    builder.add_conditional_edges(START, _route_from_start, {"plan": "plan", "tools": "tools"})
+    builder.add_edge(START, "plan")
     builder.add_conditional_edges("plan", _route_after_plan, {"tools": "tools", END: END})
-    builder.add_conditional_edges("tools", _route_after_tools, {"plan": "plan", END: END})
-    return builder.compile()
+    builder.add_edge("tools", "plan")
+    return builder.compile(checkpointer=InMemorySaver())
 
 
 class SupportAgentSession:
     def __init__(self, customer_email: str) -> None:
         self._graph = build_graph()
+        self._config = RunnableConfig({"configurable": {"thread_id": "support-agent"}})
         self._lock = asyncio.Lock()
         self._state: AgentState = {
             "customer_email": customer_email,
-            "messages": [ChatMessage(role="system", content=system_prompt(customer_email))],
-            "pending_purchase": None,
-            "waiting_call": None,
-            "remaining_calls": [],
-            "approval": None,
+            "messages": [
+                ChatMessage(
+                    role="system", content=system_prompt(customer_email)
+                ).model_dump(mode="json")
+            ],
         }
+        self._pending_purchase: PendingPurchase | None = None
 
     async def send_message(self, text: str) -> TurnResult:
         async with self._lock:
-            if self._state["pending_purchase"] is not None:
+            if self._pending_purchase is not None:
                 raise PendingApprovalError("purchase approval is still pending")
 
             turn_start = len(self._state["messages"])
-            self._state = await self._graph.ainvoke(
+            await self._invoke(
                 {
                     **self._state,
                     "messages": [
                         *self._state["messages"],
-                        ChatMessage(role="user", content=text),
+                        ChatMessage(role="user", content=text).model_dump(mode="json"),
                     ],
-                    "approval": None,
                 }
             )
             return self._turn_result(turn_start)
@@ -165,35 +144,38 @@ class SupportAgentSession:
         self, approval_id: str, decision: ApprovalDecision
     ) -> TurnResult:
         async with self._lock:
-            pending = self._state["pending_purchase"]
+            pending = self._pending_purchase
             if pending is None:
                 raise NoPendingApprovalError("nothing pending")
             if pending.approval_id != approval_id:
                 raise StaleApprovalError("approval request is stale")
 
             turn_start = len(self._state["messages"])
-            self._state = await self._graph.ainvoke(
-                {
-                    **self._state,
-                    "approval": decision,
-                    "pending_purchase": None,
-                }
-            )
+            await self._invoke(Command(resume=decision.model_dump(mode="json")))
             return self._turn_result(turn_start)
 
     def transcript(self) -> list[ChatMessage]:
         return [
             message
-            for message in self._state["messages"]
+            for message in _messages(self._state["messages"])
             if message.role in ("user", "assistant") and message.content
         ]
 
     def pending_approval(self) -> PendingPurchase | None:
-        return self._state["pending_purchase"]
+        return self._pending_purchase
+
+    async def _invoke(self, graph_input: AgentState | Command) -> None:
+        result: GraphOutput = await self._graph.ainvoke(
+            graph_input,
+            self._config,
+            version="v2",
+        )
+        self._state = result.value
+        self._pending_purchase = _pending_from_interrupts(result.interrupts)
 
     def _turn_result(self, since: int) -> TurnResult:
         reply = _last_assistant_text(self._state["messages"], since=since)
-        if self._state["pending_purchase"] is not None:
+        if self._pending_purchase is not None:
             return TurnResult(status="awaiting_approval", reply=reply)
         return TurnResult(status="reply", reply=reply)
 
@@ -212,8 +194,30 @@ class ConversationStore:
             raise KeyError("unknown conversation") from e
 
 
-def _last_assistant_text(messages: list[ChatMessage], since: int = 0) -> str:
-    for message in reversed(messages[since:]):
+def _last_assistant_text(
+    messages: list[dict[str, Any]], since: int = 0
+) -> str:
+    for message in reversed(_messages(messages[since:])):
         if message.role == "assistant" and message.content:
             return message.content
     return ""
+
+
+def _pending_from_interrupts(interrupts: tuple) -> PendingPurchase | None:
+    if not interrupts:
+        return None
+    return PendingPurchase.model_validate(interrupts[0].value)
+
+
+def _messages(values: list[ChatMessage | dict[str, Any]]) -> list[ChatMessage]:
+    return [_message(value) for value in values]
+
+
+def _message(value: ChatMessage | dict[str, Any]) -> ChatMessage:
+    if isinstance(value, ChatMessage):
+        return value
+    return ChatMessage.model_validate(value)
+
+
+def _message_dicts(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    return [message.model_dump(mode="json") for message in messages]
