@@ -98,7 +98,11 @@ def _control_payload(controls: DemoControlState) -> dict:
         "openAIResponsesOutage": controls.openai_responses_outage,
         "langGraphAppEnabled": None,
         "workerEnabled": controls.worker_enabled,
-        "capabilities": {"langGraphApp": False, "worker": True},
+        "capabilities": {
+            "langGraphApp": False,
+            "worker": True,
+            "endWorkflow": True,
+        },
     }
 
 
@@ -113,6 +117,7 @@ async def root():
             "GET  /conversations/{id}/transcript",
             "GET  /conversations/{id}/pending-approval",
             "POST /conversations/{id}/approve",
+            "POST /conversations/{id}/end",
         ],
     }
 
@@ -212,6 +217,15 @@ async def approve(conversation_id: str, body: Approve):
     except WorkflowUpdateFailedError as e:
         detail = getattr(e.cause, "message", None) or str(e.cause)
         raise HTTPException(status_code=409, detail=detail) from e
+    except RPCError as e:
+        _not_found(e)
+    return {}
+
+
+@app.post("/conversations/{conversation_id}/end", status_code=202)
+async def end_workflow(conversation_id: str):
+    try:
+        await _handle(conversation_id).cancel(reason="Ended from demo controls")
     except RPCError as e:
         _not_found(e)
     return {}

@@ -27,7 +27,12 @@ class DemoControlApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["randomOpenAIFailures"])
         self.assertEqual(
             payload["capabilities"],
-            {"langGraphApp": True, "worker": False, "resumeTurn": True},
+            {
+                "langGraphApp": True,
+                "worker": False,
+                "resumeTurn": True,
+                "endWorkflow": False,
+            },
         )
 
     async def test_disabled_app_rejects_conversation_traffic(self) -> None:

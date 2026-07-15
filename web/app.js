@@ -316,6 +316,15 @@ function renderDemoControls(controls) {
         ? 'The checkpoint is durable, but no process is running this turn.'
         : 'Kill the standalone app during a turn to enable manual recovery.';
 
+  const canEndWorkflow = Boolean(capabilities.endWorkflow && conversationId);
+  $('control-end-workflow').disabled = controlsLoading || !canEndWorkflow;
+  $('control-end-workflow').classList.toggle('unavailable', !capabilities.endWorkflow);
+  $('control-end-workflow-copy').textContent = !capabilities.endWorkflow
+    ? 'Only Temporal-backed implementations have a workflow to end.'
+    : conversationId
+      ? 'Cancel the active Temporal workflow and return to start.'
+      : 'Start a conversation to enable this action.';
+
   const injecting =
     controls.randomOpenAIFailures ||
     controls.openAIResponsesOutage ||
@@ -333,6 +342,8 @@ function setControlsLoading(loading) {
   $('control-worker').disabled = loading || !capabilities.worker;
   $('control-resume-turn').disabled =
     loading || !capabilities.resumeTurn || !conversationStatus?.resumable;
+  $('control-end-workflow').disabled =
+    loading || !capabilities.endWorkflow || !conversationId;
 }
 
 async function refreshConversationFromCheckpoint() {
@@ -409,6 +420,22 @@ async function resumeInterruptedTurn() {
   }
 }
 
+async function endActiveWorkflow() {
+  if (!conversationId || !demoControls?.capabilities?.endWorkflow) return;
+  if (!window.confirm('End this workflow? This cannot be undone.')) return;
+
+  setControlsLoading(true);
+  setControlsMessage('Ending workflow…');
+  try {
+    await call('POST', `/conversations/${conversationId}/end`);
+    window.location.reload();
+  } catch (error) {
+    setControlsLoading(false);
+    if (demoControls) renderDemoControls(demoControls);
+    setControlsMessage(error.message, { error: true });
+  }
+}
+
 function setControlsOpen(open) {
   controlsOpen = open;
   $('controls-panel').classList.toggle('open', open);
@@ -431,6 +458,7 @@ function setupDemoControls() {
   $('control-worker').onchange = (event) =>
     updateDemoControl('workerEnabled', event.target.checked);
   $('control-resume-turn').onclick = resumeInterruptedTurn;
+  $('control-end-workflow').onclick = endActiveWorkflow;
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && controlsOpen) setControlsOpen(false);
   });
