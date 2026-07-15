@@ -62,6 +62,7 @@ services:
       TEMPORAL_TLS: ${TEMPORAL_TLS:-false}
       LANGGRAPH_TEMPORAL_TASK_QUEUE: ${LANGGRAPH_TEMPORAL_TASK_QUEUE:-support-agent-temporal-langgraph}
       BACKEND_URL: http://backend:8000
+      DB_URL: postgresql://${POSTGRES_USER:-demo}:${POSTGRES_PASSWORD_URLENCODED:-${POSTGRES_PASSWORD:-demo}}@postgres:5432/${APP_DB_NAME:-chinook}
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}

@@ -6,6 +6,7 @@ ID, so the gateway can stay stateless.
     uv run python -m uvicorn api:app --port 8002
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -17,9 +18,18 @@ from temporalio.service import RPCError, RPCStatusCode
 
 import config
 from support_agent_common.conversations import new_conversation_id
+from support_agent_common.demo_controls import (
+    DemoControlState,
+    get_demo_controls,
+    update_demo_controls,
+)
 from activities.tools import execute_tool_local
 from models.types import ApprovalDecision, ToolRequest
 from workflows.agent import SupportAgentWorkflow
+
+
+BACKEND_ID = "temporal-langgraph"
+ENABLED_RANDOM_FAILURE_RATE = 0.5
 
 
 @asynccontextmanager
@@ -57,6 +67,12 @@ class Approve(BaseModel):
     reason: str | None = None
 
 
+class DemoControlUpdate(BaseModel):
+    randomOpenAIFailures: bool | None = None
+    openAIResponsesOutage: bool | None = None
+    workerEnabled: bool | None = None
+
+
 def _client() -> Client:
     return app.state.temporal
 
@@ -86,6 +102,26 @@ def require_demo_access(request: Request) -> None:
         raise HTTPException(status_code=401, detail="demo access token required")
 
 
+def _load_controls() -> DemoControlState:
+    return get_demo_controls(
+        config.DB_URL,
+        BACKEND_ID,
+        initial_failure_rate=config.OPENAI_FAILURE_RATE,
+    )
+
+
+def _control_payload(controls: DemoControlState) -> dict:
+    return {
+        "backend": BACKEND_ID,
+        "randomOpenAIFailures": controls.random_openai_failure_rate > 0,
+        "randomOpenAIFailureRate": controls.random_openai_failure_rate,
+        "openAIResponsesOutage": controls.openai_responses_outage,
+        "langGraphAppEnabled": None,
+        "workerEnabled": controls.worker_enabled,
+        "capabilities": {"langGraphApp": False, "worker": True},
+    }
+
+
 @app.get("/")
 async def root():
     return {
@@ -106,6 +142,35 @@ async def root():
 @api.get("/healthz")
 async def healthz():
     return {"ok": True}
+
+
+@api.get("/demo/controls")
+async def demo_controls(_access: None = Depends(require_demo_access)):
+    return _control_payload(await asyncio.to_thread(_load_controls))
+
+
+@api.put("/demo/controls")
+async def set_demo_controls(
+    body: DemoControlUpdate,
+    _access: None = Depends(require_demo_access),
+):
+    failure_rate = (
+        None
+        if body.randomOpenAIFailures is None
+        else ENABLED_RANDOM_FAILURE_RATE
+        if body.randomOpenAIFailures
+        else 0
+    )
+    controls = await asyncio.to_thread(
+        update_demo_controls,
+        config.DB_URL,
+        BACKEND_ID,
+        random_openai_failure_rate=failure_rate,
+        openai_responses_outage=body.openAIResponsesOutage,
+        worker_enabled=body.workerEnabled,
+        initial_failure_rate=config.OPENAI_FAILURE_RATE,
+    )
+    return _control_payload(controls)
 
 
 @app.post("/internal/tools/execute", include_in_schema=False)
@@ -192,8 +257,10 @@ async def approve(
     try:
         await handle.execute_update(
             SupportAgentWorkflow.approve_purchase,
-            body.approvalId,
-            ApprovalDecision(approved=body.approved, reason=body.reason),
+            args=[
+                body.approvalId,
+                ApprovalDecision(approved=body.approved, reason=body.reason),
+            ],
         )
     except WorkflowUpdateFailedError as e:
         detail = getattr(e.cause, "message", None) or str(e.cause)

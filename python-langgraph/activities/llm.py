@@ -4,8 +4,8 @@ LangGraph owns orchestration. LangChain owns provider-neutral chat-model
 invocation and tool-call normalization.
 """
 
+import asyncio
 import json
-import random
 from typing import Any
 
 import anthropic
@@ -23,15 +23,12 @@ import openai
 import config
 from models.types import ChatMessage, LLMRequest, LLMResponse, ToolCall
 from prompts import TOOLS
-
-
-class SimulatedOpenAIFailure(RuntimeError):
-    pass
+from support_agent_common.demo_controls import maybe_raise_openai_failure
 
 
 async def call_llm(req: LLMRequest) -> LLMResponse:
     try:
-        _maybe_fail_openai_call()
+        await _maybe_fail_openai_call()
         model = _chat_model().bind_tools(_langchain_tools())
         response = await model.ainvoke(
             _to_langchain_messages(req.messages),
@@ -67,14 +64,15 @@ async def call_llm(req: LLMRequest) -> LLMResponse:
     )
 
 
-def _maybe_fail_openai_call() -> None:
-    if config.LLM_PROVIDER != "openai" or config.OPENAI_FAILURE_RATE <= 0:
+async def _maybe_fail_openai_call() -> None:
+    if config.LLM_PROVIDER != "openai":
         return
-    if random.random() < config.OPENAI_FAILURE_RATE:
-        raise SimulatedOpenAIFailure(
-            f"Simulated OpenAI API failure "
-            f"(OPENAI_FAILURE_RATE={config.OPENAI_FAILURE_RATE})"
-        )
+    await asyncio.to_thread(
+        maybe_raise_openai_failure,
+        config.DB_URL,
+        "langgraph",
+        initial_failure_rate=config.OPENAI_FAILURE_RATE,
+    )
 
 
 def _chat_model():

@@ -35,6 +35,22 @@ To run only one implementation, use `make original`, `make langgraph`, or
 execution; try `make kill-worker`, continue/restart with `make worker`, and
 observe the conversation resume from persisted workflow state.
 
+## Demo controls
+
+Use **Demo controls** in the top-right corner of the UI to inject failures into
+the currently selected implementation:
+
+- Enable random OpenAI planning failures.
+- Turn the OpenAI Responses API on or off.
+- Turn the standalone LangGraph app on or off. Disabling it clears its
+  process-local conversations, matching an app loss.
+- Turn either Temporal worker on or off. Disabling stops its poller; enabling
+  starts a fresh poller so durable work can resume.
+
+Control state is stored in the shared Postgres database so the API and worker
+components observe the same settings. The control endpoint stays available
+while an app or worker is disabled, making every switch reversible from the UI.
+
 ## Deployment architecture
 
 The production stack keeps all three implementations available for comparison.
@@ -100,6 +116,7 @@ Secrets Manager. The local `.env` is never uploaded by the deployment.
 | `LLM_PROVIDER` | `anthropic` or `openai` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Selected provider credential; secret |
 | `ANTHROPIC_MODEL` / `OPENAI_MODEL` | Selected provider model ID |
+| `OPENAI_FAILURE_RATE` | Initial random-failure rate before the UI overrides it |
 
 For OpenAI Sol, for example:
 

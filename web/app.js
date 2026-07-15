@@ -9,6 +9,9 @@ let conversationId = null;
 let activeBackendId = null;
 let activeBackend = null;
 let approvalPending = false;
+let demoControls = null;
+let controlsOpen = false;
+let controlsLoading = false;
 
 const FALLBACK_BACKENDS = {
   langgraph: {
@@ -118,6 +121,7 @@ function selectBackend(id, { persist = true, updateUrl = true } = {}) {
     window.history.replaceState(null, '', url);
   }
   applyConfig();
+  if (controlsOpen) loadDemoControls();
 }
 
 // ── tiny fetch helper ────────────────────────────────────────────────────────
@@ -243,6 +247,111 @@ function applyConfig() {
   });
   document.querySelectorAll('[data-backend-name]').forEach((el) => {
     el.textContent = activeBackend.label;
+  });
+}
+
+// ── demo fault controls ─────────────────────────────────────────────────────
+function setControlsMessage(message, { error = false } = {}) {
+  const el = $('controls-message');
+  el.textContent = message;
+  el.classList.toggle('error', error);
+}
+
+function setControlAvailable(rowId, inputId, available) {
+  const row = $(rowId);
+  const input = $(inputId);
+  row.classList.toggle('unavailable', !available);
+  input.disabled = controlsLoading || !available;
+}
+
+function renderDemoControls(controls) {
+  demoControls = controls;
+  const capabilities = controls.capabilities || {};
+
+  $('control-random').checked = Boolean(controls.randomOpenAIFailures);
+  $('control-random-copy').textContent = controls.randomOpenAIFailures
+    ? `Fail ${Math.round((controls.randomOpenAIFailureRate || 0) * 100)}% of OpenAI planning calls.`
+    : 'When enabled, fail about half of OpenAI planning calls.';
+  $('control-openai').checked = !controls.openAIResponsesOutage;
+  $('control-app').checked = controls.langGraphAppEnabled !== false;
+  $('control-worker').checked = controls.workerEnabled !== false;
+
+  setControlAvailable('control-row-random', 'control-random', true);
+  setControlAvailable('control-row-outage', 'control-openai', true);
+  setControlAvailable('control-row-app', 'control-app', Boolean(capabilities.langGraphApp));
+  setControlAvailable('control-row-worker', 'control-worker', Boolean(capabilities.worker));
+
+  const injecting =
+    controls.randomOpenAIFailures ||
+    controls.openAIResponsesOutage ||
+    controls.langGraphAppEnabled === false ||
+    controls.workerEnabled === false;
+  document.querySelector('#controls-toggle .status-dot')?.classList.toggle('injecting', injecting);
+}
+
+function setControlsLoading(loading) {
+  controlsLoading = loading;
+  const capabilities = demoControls?.capabilities || {};
+  $('control-random').disabled = loading;
+  $('control-openai').disabled = loading;
+  $('control-app').disabled = loading || !capabilities.langGraphApp;
+  $('control-worker').disabled = loading || !capabilities.worker;
+}
+
+async function loadDemoControls() {
+  setControlsLoading(true);
+  setControlsMessage('Loading controls…');
+  try {
+    const controls = await call('GET', '/demo/controls');
+    demoControls = controls;
+    setControlsLoading(false);
+    renderDemoControls(controls);
+    setControlsMessage('Controls are applied to this backend immediately.');
+  } catch (error) {
+    setControlsLoading(false);
+    setControlsMessage(error.message, { error: true });
+  }
+}
+
+async function updateDemoControl(field, enabled) {
+  setControlsLoading(true);
+  setControlsMessage('Applying change…');
+  try {
+    const controls = await call('PUT', '/demo/controls', { [field]: enabled });
+    demoControls = controls;
+    setControlsLoading(false);
+    renderDemoControls(controls);
+    setControlsMessage('Control updated.');
+  } catch (error) {
+    setControlsLoading(false);
+    if (demoControls) renderDemoControls(demoControls);
+    setControlsMessage(error.message, { error: true });
+  }
+}
+
+function setControlsOpen(open) {
+  controlsOpen = open;
+  $('controls-panel').classList.toggle('open', open);
+  $('controls-backdrop').classList.toggle('open', open);
+  $('controls-panel').setAttribute('aria-hidden', String(!open));
+  $('controls-toggle').setAttribute('aria-expanded', String(open));
+  if (open) loadDemoControls();
+}
+
+function setupDemoControls() {
+  $('controls-toggle').onclick = () => setControlsOpen(true);
+  $('controls-close').onclick = () => setControlsOpen(false);
+  $('controls-backdrop').onclick = () => setControlsOpen(false);
+  $('control-random').onchange = (event) =>
+    updateDemoControl('randomOpenAIFailures', event.target.checked);
+  $('control-openai').onchange = (event) =>
+    updateDemoControl('openAIResponsesOutage', !event.target.checked);
+  $('control-app').onchange = (event) =>
+    updateDemoControl('langGraphAppEnabled', event.target.checked);
+  $('control-worker').onchange = (event) =>
+    updateDemoControl('workerEnabled', event.target.checked);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && controlsOpen) setControlsOpen(false);
   });
 }
 
@@ -393,4 +502,5 @@ $('start-form').onsubmit = async (e) => {
 
 selectBackend(initialBackendId(), { persist: false, updateUrl: false });
 setupBackendSelector();
+setupDemoControls();
 demoToken();
