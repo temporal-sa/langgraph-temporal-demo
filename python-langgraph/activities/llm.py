@@ -81,6 +81,7 @@ def _chat_model():
     if config.LLM_PROVIDER == "openai":
         return ChatOpenAI(
             model=config.OPENAI_MODEL,
+            use_responses_api=True,
             max_retries=0,
             timeout=30,
         )
