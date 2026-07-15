@@ -83,6 +83,7 @@ services:
       BACKEND_URL: http://backend:8000
       DEFAULT_AGENT_BACKEND: temporal-langgraph
       TEMPORAL_LANGGRAPH_BACKEND_URL: /api
+      TEMPORAL_LANGGRAPH_API_UPSTREAM: http://backend:8000
       TEMPORAL_UI_URL: ${TEMPORAL_UI_URL:-http://localhost:8233}
     ports:
       - "${COMPOSE_WEB_PORT:-5173}:8080"

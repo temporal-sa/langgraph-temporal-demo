@@ -5,6 +5,37 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # A trailing slash on proxy_pass replaces the matched location prefix, so
+    # every FastAPI app continues to receive its native /conversations paths.
+    location /api/temporal/ {
+        proxy_pass ${TEMPORAL_API_UPSTREAM}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/langgraph/ {
+        proxy_pass ${LANGGRAPH_API_UPSTREAM}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /api/temporal-langgraph/ {
+        proxy_pass ${TEMPORAL_LANGGRAPH_API_UPSTREAM}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Backward-compatible single-backend route used by the existing Compose
+    # profile. Cloud selector URLs use the more-specific locations above.
     location /api/ {
         proxy_pass ${BACKEND_URL};
         proxy_http_version 1.1;
@@ -17,7 +48,7 @@ server {
 
     location = /healthz {
         access_log off;
-        proxy_pass ${BACKEND_URL}/api/health;
+        proxy_pass ${TEMPORAL_LANGGRAPH_API_UPSTREAM}/api/health;
     }
 
     location / {

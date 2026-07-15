@@ -9,10 +9,37 @@ comparison:
 - `python-langgraph-temporal/` — Temporal-backed LangGraph, used by the
   containerized production deployment.
 
+## Run the demo
+
+Prerequisites: Docker, the [Temporal CLI](https://docs.temporal.io/cli), and
+[`uv`](https://docs.astral.sh/uv/). Then, from the repository root:
+
+```bash
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY or OPENAI_API_KEY.
+make up
+```
+
+Open the chat at <http://localhost:5173> and choose an implementation. Open the
+Temporal UI at <http://localhost:8233> to watch workflow history while you
+chat. Useful commands:
+
+```bash
+make status   # Show each local process and service.
+make logs     # Tail the backend, worker, web, and Temporal logs.
+make down     # Stop everything started by make up.
+```
+
+To run only one implementation, use `make original`, `make langgraph`, or
+`make temporal-langgraph`. The first and third variants demonstrate durable
+execution; try `make kill-worker`, continue/restart with `make worker`, and
+observe the conversation resume from persisted workflow state.
+
 ## Deployment architecture
 
-The production stack follows the Déjà Vu Tacos operational model. The backend
-and worker reuse one Python app image but run as independent processes.
+The production stack keeps all three implementations available for comparison.
+The frontend is the only public component and routes each selector option to
+its corresponding internal API.
 
 ```text
 Browser
@@ -20,33 +47,20 @@ Browser
   | https://langgraph-temporal.tmprl-demo.cloud
   v
 tmprl-demo.cloud ingress
-  |-- /* -----> frontend (nginx/static UI)
-  `-- /api/* -> backend (FastAPI) ------> Temporal Cloud
-                    ^                         ^
-                    | private ClusterIP       | task queue
-                    |                         |
-              worker activities <------ Temporal worker
-                    |
-                    `-- tool calls through backend -> Postgres
+  `-- /* -> frontend (nginx/static UI)
+              |-- /api/temporal/* ----------> Temporal API ---> Temporal Cloud
+              |                                  ^
+              |                                  `--- Temporal worker ---> Postgres
+              |-- /api/langgraph/* ----------> LangGraph API ------------> Postgres
+              `-- /api/temporal-langgraph/* -> Temporal+LG API -> Temporal Cloud
+                                                     ^
+                                                     `--- Temporal+LG worker -> Postgres
 ```
 
-Kubernetes never runs a Temporal Server. The backend starts, signals, updates,
-and queries workflows in Temporal Cloud. The independently restartable worker
-polls the same Cloud task queue and calls the operator-created backend service
-through `BACKEND_URL=http://backend:8000`.
-
-## Local quick start
-
-For the source-based comparison environment:
-
-```bash
-cp .env.example .env
-# Add ANTHROPIC_API_KEY or OPENAI_API_KEY to .env
-make up
-```
-
-Open `http://localhost:5173`. The selector exposes all three implementations.
-The Temporal UI is at `http://localhost:8233`. Stop everything with `make down`.
+Kubernetes never runs a Temporal Server. The two Temporal APIs start, update,
+and query workflows in Temporal Cloud, while their independently restartable
+workers poll separate task queues. Standalone LangGraph keeps conversations in
+its single API replica. All three variants use the same seeded Postgres service.
 
 ## Docker Compose
 
@@ -82,13 +96,10 @@ Secrets Manager. The local `.env` is never uploaded by the deployment.
 | `TEMPORAL_API_KEY` | Namespace-scoped Cloud API key; secret |
 | `TEMPORAL_TLS` | `true` in production |
 | `LANGGRAPH_TEMPORAL_TASK_QUEUE` | Shared backend/worker task queue |
-| `BACKEND_URL` | Private worker-to-backend base URL |
 | `DB_URL` | PostgreSQL connection URL; secret |
 | `LLM_PROVIDER` | `anthropic` or `openai` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Selected provider credential; secret |
 | `ANTHROPIC_MODEL` / `OPENAI_MODEL` | Selected provider model ID |
-| `DEMO_ACCESS_TOKEN` | Shared public-demo application token; secret |
-| `CORS_ALLOW_ORIGINS` | Comma-separated browser origins |
 
 For OpenAI Sol, for example:
 
@@ -106,15 +117,19 @@ Build for the Kubernetes target platform:
 
 ```bash
 docker buildx build --platform linux/amd64 --load \
-  -f docker/backend.Dockerfile -t langgraph-temporal-demo-app:local .
+  -f docker/temporal.Dockerfile -t langgraph-temporal-demo-temporal:local .
+docker buildx build --platform linux/amd64 --load \
+  -f docker/langgraph.Dockerfile -t langgraph-temporal-demo-langgraph:local .
+docker buildx build --platform linux/amd64 --load \
+  -f docker/backend.Dockerfile -t langgraph-temporal-demo-temporal-langgraph:local .
 docker buildx build --platform linux/amd64 --load \
   -f docker/frontend.Dockerfile -t langgraph-temporal-demo-frontend:local .
 docker buildx build --platform linux/amd64 --load \
   -f docker/postgres.Dockerfile -t langgraph-temporal-demo-postgres:local .
 ```
 
-The app image runs FastAPI by default. The worker deployment reuses it with
-`python worker.py`.
+Each Temporal variant uses its API image for both the FastAPI component and its
+`python worker.py` component.
 
 ## tmprl-demo.cloud deployment
 
@@ -126,9 +141,9 @@ defined by one `DemoProject` resource in the private
 projects/demo/langgraph-temporal.yaml
 ```
 
-After that resource is merged, the registry operator builds the three images,
-runs frontend, backend, worker, and seeded Postgres as separate components,
-creates the Temporal Cloud namespace and credentials, and publishes:
+After that resource is merged, the registry operator builds five images, runs
+three APIs, two Temporal workers, frontend, and seeded Postgres as separate
+components, creates Temporal Cloud credentials, and publishes:
 
 ```text
 https://langgraph-temporal.tmprl-demo.cloud
@@ -142,8 +157,6 @@ secrets in AWS Secrets Manager in the platform account and `us-west-1`:
 | --- | --- |
 | `tmprl-dem-cld/langgraph-temporal/llm-credentials` | `OPENAI_API_KEY` |
 | `tmprl-dem-cld/langgraph-temporal/database` | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `DB_URL` |
-| `tmprl-dem-cld/langgraph-temporal/demo-access` | `DEMO_ACCESS_TOKEN` |
-
 Temporal credentials are platform-owned and must not be added to these
 secrets. See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the onboarding sequence.
 
