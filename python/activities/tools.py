@@ -36,7 +36,13 @@ def execute_tool(req: ToolRequest) -> str:
         elif name == "get_order_details":
             result = db.get_order_details(args["order_id"])
         elif name == "purchase_tracks":
-            result = db.record_purchase(req.customer_email, args["track_ids"])
+            if not req.idempotency_key:
+                raise ValueError("A purchase idempotency key is required")
+            result = db.record_purchase(
+                req.customer_email,
+                args["track_ids"],
+                idempotency_key=req.idempotency_key,
+            )
         else:
             raise ApplicationError(f"Unknown tool: {name}", non_retryable=True)
     except ValueError as e:

@@ -33,5 +33,12 @@ def get_order_details(order_id: int) -> list[dict]:
     return database.get_order_details(config.DB_URL, order_id)
 
 
-def record_purchase(email: str, track_ids: list[int]) -> dict:
-    return database.record_purchase(config.DB_URL, email, track_ids)
+def record_purchase(
+    email: str, track_ids: list[int], *, idempotency_key: str
+) -> dict:
+    return database.record_purchase(
+        config.DB_URL,
+        email,
+        track_ids,
+        idempotency_key=idempotency_key,
+    )

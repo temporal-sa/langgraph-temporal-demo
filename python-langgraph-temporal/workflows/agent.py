@@ -31,6 +31,7 @@ class SupportAgentWorkflow:
     @workflow.run
     async def run(self, customer_email: str) -> None:
         self.state = {
+            "conversation_id": workflow.info().workflow_id,
             "customer_email": customer_email,
             "messages": [
                 ChatMessage(
@@ -147,6 +148,7 @@ def _pending_purchase(
 
 def _agent_state(value: dict[str, Any]) -> AgentState:
     return {
+        "conversation_id": str(value["conversation_id"]),
         "customer_email": str(value["customer_email"]),
         "messages": [
             message.model_dump(mode="json") for message in _messages(value["messages"])

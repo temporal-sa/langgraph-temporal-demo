@@ -99,10 +99,46 @@ def get_order_details(db_url: str, order_id: int) -> list[dict[str, Any]]:
         return conn.execute(sql, {"order_id": order_id}).fetchall()
 
 
-def record_purchase(db_url: str, email: str, track_ids: list[int]) -> dict[str, Any]:
-    """Create an invoice and lines in a single transaction after approval."""
+def record_purchase(
+    db_url: str,
+    email: str,
+    track_ids: list[int],
+    *,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Create one invoice per durable tool execution.
+
+    The idempotency row is inserted in the same transaction as the invoice. A
+    concurrent retry blocks on the unique key, then reads the committed invoice
+    instead of inserting a second purchase.
+    """
+
+    if not idempotency_key:
+        raise ValueError("A purchase idempotency key is required")
 
     with _connect(db_url) as conn:
+        # Serialize the one-time schema bootstrap and Chinook's explicit
+        # max()+1 ID allocation. This demo favors correctness over purchase
+        # throughput, and the transaction lock spans all related inserts.
+        conn.execute("SELECT pg_advisory_xact_lock(20260715, 1)")
+        _ensure_purchase_idempotency_table(conn)
+        claimed = conn.execute(
+            """INSERT INTO purchase_idempotency (idempotency_key)
+               VALUES (%s)
+               ON CONFLICT (idempotency_key) DO NOTHING
+               RETURNING idempotency_key""",
+            (idempotency_key,),
+        ).fetchone()
+        if claimed is None:
+            existing = conn.execute(
+                """SELECT invoice_id FROM purchase_idempotency
+                   WHERE idempotency_key = %s""",
+                (idempotency_key,),
+            ).fetchone()
+            if not existing or existing["invoice_id"] is None:
+                raise RuntimeError("Purchase idempotency record has no invoice")
+            return _purchase_result(conn, existing["invoice_id"])
+
         customer = conn.execute(
             """SELECT customer_id, address, city, state, country, postal_code
                FROM customer WHERE email = %s""",
@@ -112,7 +148,8 @@ def record_purchase(db_url: str, email: str, track_ids: list[int]) -> dict[str, 
             raise ValueError(f"No customer account found for {email}")
 
         tracks = conn.execute(
-            "SELECT track_id, name, unit_price FROM track WHERE track_id = ANY(%s)",
+            """SELECT track_id, name, unit_price FROM track
+               WHERE track_id = ANY(%s) ORDER BY track_id""",
             (track_ids,),
         ).fetchall()
         if not tracks:
@@ -150,6 +187,12 @@ def record_purchase(db_url: str, email: str, track_ids: list[int]) -> dict[str, 
                 (line_id, invoice_id, track["track_id"], track["unit_price"]),
             )
 
+        conn.execute(
+            """UPDATE purchase_idempotency SET invoice_id = %s
+               WHERE idempotency_key = %s""",
+            (invoice_id, idempotency_key),
+        )
+
         return {
             "invoice_id": invoice_id,
             "tracks": [
@@ -162,3 +205,40 @@ def record_purchase(db_url: str, email: str, track_ids: list[int]) -> dict[str, 
             ],
             "total": float(total),
         }
+
+
+def _ensure_purchase_idempotency_table(conn) -> None:
+    # CREATE IF NOT EXISTS keeps existing demo databases upgradeable without a
+    # separate migration step. Fresh databases also create this in chinook.sql.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS purchase_idempotency (
+               idempotency_key TEXT PRIMARY KEY,
+               invoice_id INT UNIQUE REFERENCES invoice(invoice_id)
+           )"""
+    )
+
+
+def _purchase_result(conn, invoice_id: int) -> dict[str, Any]:
+    rows = conn.execute(
+        """SELECT i.invoice_id, i.total, t.track_id, t.name, l.unit_price
+           FROM invoice i
+           JOIN invoice_line l ON l.invoice_id = i.invoice_id
+           JOIN track t ON t.track_id = l.track_id
+           WHERE i.invoice_id = %s
+           ORDER BY l.invoice_line_id""",
+        (invoice_id,),
+    ).fetchall()
+    if not rows:
+        raise RuntimeError(f"Invoice {invoice_id} has no purchase lines")
+    return {
+        "invoice_id": invoice_id,
+        "tracks": [
+            {
+                "track_id": row["track_id"],
+                "name": row["name"],
+                "price": float(row["unit_price"]),
+            }
+            for row in rows
+        ],
+        "total": float(rows[0]["total"]),
+    }

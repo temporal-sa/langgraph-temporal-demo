@@ -23,6 +23,15 @@ replacing it with signals or custom graph routing.
 
 [temporal-langgraph-interrupt]: https://github.com/temporalio/sdk-python/blob/main/tests/contrib/langgraph/test_interrupt.py
 
+## Retry-safe purchases
+
+The graph executes one tool call per `tools` node invocation, so the Temporal
+adapter schedules one Activity per tool call instead of retrying a whole batch.
+Purchase requests include an idempotency key derived from the Workflow ID and
+tool-call ID. Postgres reserves that key in the invoice transaction with
+`ON CONFLICT DO NOTHING`; an Activity retry reads and returns the original
+invoice rather than inserting another purchase.
+
 ## Run
 
 Use separate terminals from the repository root.

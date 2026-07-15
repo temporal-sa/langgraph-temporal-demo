@@ -115,6 +115,16 @@ CREATE TABLE invoice_line
     CONSTRAINT invoice_line_pkey PRIMARY KEY  (invoice_line_id)
 );
 
+CREATE TABLE purchase_idempotency
+(
+    idempotency_key TEXT NOT NULL,
+    invoice_id INT,
+    CONSTRAINT purchase_idempotency_pkey PRIMARY KEY (idempotency_key),
+    CONSTRAINT purchase_idempotency_invoice_id_key UNIQUE (invoice_id),
+    CONSTRAINT purchase_idempotency_invoice_id_fkey FOREIGN KEY (invoice_id)
+        REFERENCES invoice (invoice_id) ON DELETE NO ACTION ON UPDATE NO ACTION
+);
+
 CREATE TABLE media_type
 (
     media_type_id INT NOT NULL,
