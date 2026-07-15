@@ -140,8 +140,10 @@ async def approve(conversation_id: str, body: Approve):
     try:
         await handle.execute_update(
             SupportAgentWorkflow.approve_purchase,
-            body.approvalId,
-            ApprovalDecision(approved=body.approved, reason=body.reason),
+            args=[
+                body.approvalId,
+                ApprovalDecision(approved=body.approved, reason=body.reason),
+            ],
         )
     except WorkflowUpdateFailedError as e:
         detail = getattr(e.cause, "message", None) or str(e.cause)
