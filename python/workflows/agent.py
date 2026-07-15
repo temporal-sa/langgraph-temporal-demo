@@ -120,7 +120,7 @@ class SupportAgentWorkflow:
     @workflow.query
     def transcript(self) -> list[ChatMessage]:
         """Display view: only user/assistant messages with text."""
-        return [m for m in self.messages
+        return [m.model_copy(update={"provider_items": []}) for m in self.messages
                 if m.role in ("user", "assistant") and m.content]
 
     @workflow.query
