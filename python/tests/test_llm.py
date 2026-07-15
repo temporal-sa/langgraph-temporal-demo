@@ -72,7 +72,10 @@ class OpenAIResponsesTests(unittest.IsolatedAsyncioTestCase):
             ),
         ])
 
-        with patch("activities.llm.openai.AsyncOpenAI", return_value=client):
+        with (
+            patch("activities.llm.openai.AsyncOpenAI", return_value=client),
+            patch("activities.llm.maybe_raise_openai_failure"),
+        ):
             result = await _call_openai(request)
 
         create.assert_awaited_once()

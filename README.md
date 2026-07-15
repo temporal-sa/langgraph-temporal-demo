@@ -35,6 +35,12 @@ To run only one implementation, use `make original`, `make langgraph`, or
 execution; try `make kill-worker`, continue/restart with `make worker`, and
 observe the conversation resume from persisted workflow state.
 
+Purchases remain safe during that failure demo. Each purchase uses an
+idempotency key derived from the workflow/conversation ID and LLM tool-call ID;
+database retries return the original invoice. The LangGraph variants also run
+one tool call per graph node, which maps to one Temporal Activity per call in
+the Temporal-backed implementation.
+
 ## Demo controls
 
 Use **Demo controls** in the top-right corner of the UI to inject failures into

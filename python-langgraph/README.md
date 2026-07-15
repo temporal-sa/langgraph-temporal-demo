@@ -108,9 +108,10 @@ and the approval endpoint resumes the same LangGraph thread with
 `Command(resume=...)`. A session-local `InMemorySaver` supplies checkpointing
 for this intentionally process-local implementation.
 
-The graph collects all purchase decisions before running any tool calls. Since
-LangGraph restarts an interrupted node from the beginning, this keeps tool side
-effects after every interrupt and avoids repeating earlier calls on resume.
+The graph executes one tool call per `tools` node invocation. Purchase requests
+also carry an idempotency key derived from the conversation ID and tool-call ID,
+so a repeated execution reads the original invoice instead of inserting a
+second purchase.
 
 [langgraph-interrupts]: https://docs.langchain.com/oss/python/langgraph/interrupts
 

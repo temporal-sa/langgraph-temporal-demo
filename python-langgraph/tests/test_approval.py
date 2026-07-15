@@ -53,7 +53,10 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(pending)
             assert pending is not None
             self.assertEqual(pending.track_ids, [3])
-            self.assertEqual(set(session._state), {"customer_email", "messages"})
+            self.assertEqual(
+                set(session._state),
+                {"conversation_id", "customer_email", "messages"},
+            )
             tool.assert_not_called()
 
             resumed = await session.approve_purchase(
@@ -65,6 +68,10 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed.reply, "Purchase complete")
         self.assertIsNone(session.pending_approval())
         tool.assert_called_once()
+        self.assertEqual(
+            tool.call_args.args[0].idempotency_key,
+            f"{session._state['conversation_id']}:purchase-1",
+        )
 
 
 if __name__ == "__main__":

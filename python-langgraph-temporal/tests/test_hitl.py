@@ -39,6 +39,7 @@ class NativeHitlTests(unittest.IsolatedAsyncioTestCase):
         ):
             paused = await app.ainvoke(
                 {
+                    "conversation_id": "conversation-1",
                     "customer_email": "sa@temporal.io",
                     "messages": [
                         ChatMessage(
@@ -53,7 +54,10 @@ class NativeHitlTests(unittest.IsolatedAsyncioTestCase):
                 version="v2",
             )
 
-            self.assertEqual(set(paused.value), {"customer_email", "messages"})
+            self.assertEqual(
+                set(paused.value),
+                {"conversation_id", "customer_email", "messages"},
+            )
             self.assertEqual(len(paused.interrupts), 1)
             pending = PendingPurchase.model_validate(paused.interrupts[0].value)
             self.assertEqual(pending.track_ids, [3])
@@ -73,6 +77,54 @@ class NativeHitlTests(unittest.IsolatedAsyncioTestCase):
             "Purchase complete",
         )
         tool.assert_called_once()
+        self.assertEqual(
+            tool.call_args.args[0].idempotency_key,
+            "conversation-1:purchase-1",
+        )
+
+    async def test_each_tool_call_runs_in_a_separate_graph_step(self) -> None:
+        calls = [
+            ToolCall(id="search-1", name="search_music", args={"query": "jazz"}),
+            ToolCall(
+                id="price-1",
+                name="get_track_price",
+                args={"track_name": "Blue in Green"},
+            ),
+        ]
+        responses = [
+            LLMResponse(message=ChatMessage(role="assistant", tool_calls=calls)),
+            LLMResponse(message=ChatMessage(role="assistant", content="Done")),
+        ]
+        app = build_graph().compile(checkpointer=InMemorySaver())
+        config = RunnableConfig({"configurable": {"thread_id": "conversation-2"}})
+
+        with (
+            patch("graph.agent.call_llm", new=AsyncMock(side_effect=responses)),
+            patch("graph.agent.execute_tool", return_value="[]") as tool,
+        ):
+            updates = [
+                update
+                async for update in app.astream(
+                    {
+                        "conversation_id": "conversation-2",
+                        "customer_email": "sa@temporal.io",
+                        "messages": [
+                            ChatMessage(
+                                role="system", content="Help the customer"
+                            ).model_dump(mode="json"),
+                            ChatMessage(role="user", content="Search").model_dump(
+                                mode="json"
+                            ),
+                        ],
+                    },
+                    config,
+                    stream_mode="updates",
+                )
+            ]
+
+        tool_updates = [update for update in updates if "tools" in update]
+        self.assertEqual(len(tool_updates), 2)
+        self.assertEqual(tool.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ class SupportAgentWorkflow:
     @workflow.run
     async def run(self, customer_email: str) -> None:
         self.messages.append(ChatMessage(role="system", content=system_prompt(customer_email)))
+        workflow_id = workflow.info().workflow_id
 
         while True: 
             await workflow.wait_condition(lambda: self.turn_in_progress)
@@ -67,7 +68,11 @@ class SupportAgentWorkflow:
                         else:
                             result = await workflow.execute_activity(
                                 execute_tool,
-                                ToolRequest(call=call, customer_email=customer_email),
+                                ToolRequest(
+                                    call=call,
+                                    customer_email=customer_email,
+                                    idempotency_key=f"{workflow_id}:{call.id}",
+                                ),
                                 start_to_close_timeout=timedelta(seconds=30),
                                 summary=call.name,  # shows the tool name in the UI
                             )

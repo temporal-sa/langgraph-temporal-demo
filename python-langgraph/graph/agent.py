@@ -7,6 +7,7 @@ user interaction.
 
 import asyncio
 from typing import Any, Literal, TypedDict
+from uuid import uuid4
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
@@ -40,6 +41,7 @@ class StaleApprovalError(RuntimeError):
 
 
 class AgentState(TypedDict):
+    conversation_id: str
     customer_email: str
     messages: list[dict[str, Any]]
 
@@ -57,45 +59,59 @@ def _route_after_plan(state: AgentState) -> Literal["tools", "__end__"]:
 
 def _execute_tools(state: AgentState) -> dict:
     messages = _messages(state["messages"])
-    calls = list(messages[-1].tool_calls)
-    approvals = _review_purchases(calls, message_count=len(messages))
+    call = _next_tool_call(messages)
+    if call is None:
+        raise RuntimeError("tools node has no unprocessed tool call")
 
-    for call in calls:
-        if call.name == "purchase_tracks":
-            decision = approvals[call.id]
-            if decision.approved:
-                result = execute_tool(
-                    ToolRequest(call=call, customer_email=state["customer_email"])
-                )
-            else:
-                reason = f" Reason: {decision.reason}" if decision.reason else ""
-                result = f"The customer's approver DECLINED this purchase.{reason}"
-        else:
-            result = execute_tool(
-                ToolRequest(call=call, customer_email=state["customer_email"])
-            )
-
-        messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
-
-    return {"messages": _message_dicts(messages)}
-
-
-def _review_purchases(
-    calls: list[ToolCall], *, message_count: int
-) -> dict[str, ApprovalDecision]:
-    """Collect every approval before executing any tool side effects."""
-    approvals: dict[str, ApprovalDecision] = {}
-    for call in calls:
-        if call.name != "purchase_tracks":
-            continue
+    if call.name == "purchase_tracks":
         pending = PendingPurchase(
-            approval_id=f"{call.id}:{message_count}",
+            approval_id=f"{call.id}:{len(messages)}",
             track_ids=call.args.get("track_ids", []),
             description=call.args.get("summary"),
         )
         resume_value = interrupt(pending.model_dump(mode="json"))
-        approvals[call.id] = ApprovalDecision.model_validate(resume_value)
-    return approvals
+        decision = ApprovalDecision.model_validate(resume_value)
+        if decision.approved:
+            result = execute_tool(
+                ToolRequest(
+                    call=call,
+                    customer_email=state["customer_email"],
+                    idempotency_key=f"{state['conversation_id']}:{call.id}",
+                )
+            )
+        else:
+            reason = f" Reason: {decision.reason}" if decision.reason else ""
+            result = f"The customer's approver DECLINED this purchase.{reason}"
+    else:
+        result = execute_tool(
+            ToolRequest(call=call, customer_email=state["customer_email"])
+        )
+
+    messages.append(ChatMessage(role="tool", content=result, tool_call_id=call.id))
+
+    return {"messages": _message_dicts(messages)}
+
+
+def _route_after_tools(state: AgentState) -> Literal["tools", "plan"]:
+    return "tools" if _next_tool_call(_messages(state["messages"])) else "plan"
+
+
+def _next_tool_call(messages: list[ChatMessage]) -> ToolCall | None:
+    """Return the first call from the latest plan without a tool response."""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.role != "assistant" or not message.tool_calls:
+            continue
+        completed = {
+            item.tool_call_id
+            for item in messages[index + 1 :]
+            if item.role == "tool" and item.tool_call_id
+        }
+        return next(
+            (call for call in message.tool_calls if call.id not in completed),
+            None,
+        )
+    return None
 
 
 def build_graph():
@@ -104,16 +120,24 @@ def build_graph():
     builder.add_node("tools", _execute_tools)
     builder.add_edge(START, "plan")
     builder.add_conditional_edges("plan", _route_after_plan, {"tools": "tools", END: END})
-    builder.add_edge("tools", "plan")
+    builder.add_conditional_edges(
+        "tools", _route_after_tools, {"tools": "tools", "plan": "plan"}
+    )
     return builder.compile(checkpointer=InMemorySaver())
 
 
 class SupportAgentSession:
-    def __init__(self, customer_email: str) -> None:
+    def __init__(
+        self, customer_email: str, conversation_id: str | None = None
+    ) -> None:
+        conversation_id = conversation_id or f"standalone-{uuid4()}"
         self._graph = build_graph()
-        self._config = RunnableConfig({"configurable": {"thread_id": "support-agent"}})
+        self._config = RunnableConfig(
+            {"configurable": {"thread_id": conversation_id}}
+        )
         self._lock = asyncio.Lock()
         self._state: AgentState = {
+            "conversation_id": conversation_id,
             "customer_email": customer_email,
             "messages": [
                 ChatMessage(
@@ -185,7 +209,10 @@ class ConversationStore:
         self._sessions: dict[str, SupportAgentSession] = {}
 
     def create(self, conversation_id: str, customer_email: str) -> None:
-        self._sessions[conversation_id] = SupportAgentSession(customer_email)
+        self._sessions[conversation_id] = SupportAgentSession(
+            customer_email,
+            conversation_id,
+        )
 
     def get(self, conversation_id: str) -> SupportAgentSession:
         try:

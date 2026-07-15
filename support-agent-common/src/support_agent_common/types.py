@@ -35,6 +35,7 @@ class LLMResponse(BaseModel):
 class ToolRequest(BaseModel):
     call: ToolCall
     customer_email: str
+    idempotency_key: str | None = None
 
 
 class PendingPurchase(BaseModel):
