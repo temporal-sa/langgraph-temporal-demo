@@ -5,6 +5,7 @@ serve any conversation.
     uv run uvicorn api:app --port 8000
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,8 +17,17 @@ from temporalio.service import RPCError, RPCStatusCode
 
 import config
 from support_agent_common.conversations import new_conversation_id
+from support_agent_common.demo_controls import (
+    DemoControlState,
+    get_demo_controls,
+    update_demo_controls,
+)
 from models.types import ApprovalDecision
 from workflows.agent import SupportAgentWorkflow
+
+
+BACKEND_ID = "temporal"
+ENABLED_RANDOM_FAILURE_RATE = 0.5
 
 
 @asynccontextmanager
@@ -52,6 +62,12 @@ class Approve(BaseModel):
     reason: str | None = None
 
 
+class DemoControlUpdate(BaseModel):
+    randomOpenAIFailures: bool | None = None
+    openAIResponsesOutage: bool | None = None
+    workerEnabled: bool | None = None
+
+
 def _client() -> Client:
     return app.state.temporal
 
@@ -64,6 +80,26 @@ def _not_found(e: RPCError):
     if e.status == RPCStatusCode.NOT_FOUND:
         raise HTTPException(status_code=404, detail="unknown conversation") from e
     raise e
+
+
+def _load_controls() -> DemoControlState:
+    return get_demo_controls(
+        config.DB_URL,
+        BACKEND_ID,
+        initial_failure_rate=config.OPENAI_FAILURE_RATE,
+    )
+
+
+def _control_payload(controls: DemoControlState) -> dict:
+    return {
+        "backend": BACKEND_ID,
+        "randomOpenAIFailures": controls.random_openai_failure_rate > 0,
+        "randomOpenAIFailureRate": controls.random_openai_failure_rate,
+        "openAIResponsesOutage": controls.openai_responses_outage,
+        "langGraphAppEnabled": None,
+        "workerEnabled": controls.worker_enabled,
+        "capabilities": {"langGraphApp": False, "worker": True},
+    }
 
 
 @app.get("/")
@@ -79,6 +115,32 @@ async def root():
             "POST /conversations/{id}/approve",
         ],
     }
+
+
+@app.get("/demo/controls")
+async def demo_controls():
+    return _control_payload(await asyncio.to_thread(_load_controls))
+
+
+@app.put("/demo/controls")
+async def set_demo_controls(body: DemoControlUpdate):
+    failure_rate = (
+        None
+        if body.randomOpenAIFailures is None
+        else ENABLED_RANDOM_FAILURE_RATE
+        if body.randomOpenAIFailures
+        else 0
+    )
+    controls = await asyncio.to_thread(
+        update_demo_controls,
+        config.DB_URL,
+        BACKEND_ID,
+        random_openai_failure_rate=failure_rate,
+        openai_responses_outage=body.openAIResponsesOutage,
+        worker_enabled=body.workerEnabled,
+        initial_failure_rate=config.OPENAI_FAILURE_RATE,
+    )
+    return _control_payload(controls)
 
 
 @app.post("/conversations", status_code=201)
@@ -120,7 +182,9 @@ async def transcript(conversation_id: str):
 @app.get("/conversations/{conversation_id}/pending-approval")
 async def pending_approval(conversation_id: str):
     try:
-        pending = await _handle(conversation_id).query(SupportAgentWorkflow.pending_approval)
+        pending = await _handle(conversation_id).query(
+            SupportAgentWorkflow.pending_approval
+        )
     except RPCError as e:
         _not_found(e)
     if pending is None:

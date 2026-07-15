@@ -21,10 +21,23 @@ TEMPORAL_TLS_KEY = os.getenv("TEMPORAL_TLS_KEY")
 # Database — docker compose up -d (local) or an in-cluster Service (EKS).
 DB_URL = os.getenv("DB_URL", "postgresql://demo:demo@localhost:5432/chinook")
 
+
+def _failure_rate(name: str) -> float:
+    raw = os.getenv(name, "0")
+    try:
+        value = float(raw)
+    except ValueError as e:
+        raise ValueError(f"{name} must be a number between 0 and 1") from e
+    if not 0 <= value <= 1:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return value
+
+
 # LLM provider
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_FAILURE_RATE = _failure_rate("OPENAI_FAILURE_RATE")
 
 
 async def temporal_client():
@@ -32,7 +45,10 @@ async def temporal_client():
     from temporalio.client import Client, TLSConfig
     from temporalio.contrib.pydantic import pydantic_data_converter
 
-    common = {"namespace": TEMPORAL_NAMESPACE, "data_converter": pydantic_data_converter}
+    common = {
+        "namespace": TEMPORAL_NAMESPACE,
+        "data_converter": pydantic_data_converter,
+    }
 
     if TEMPORAL_API_KEY:
         return await Client.connect(
