@@ -18,6 +18,10 @@ class ChatMessage(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)  # on role="assistant"
     tool_call_id: str | None = None  # on role="tool"
+    # Opaque provider output needed to continue stateless reasoning/tool calls.
+    # The OpenAI Responses API requires its reasoning items to be replayed on
+    # the request following a function call.
+    provider_items: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class LLMRequest(BaseModel):

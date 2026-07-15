@@ -75,37 +75,47 @@ async def _call_anthropic(req: LLMRequest) -> LLMResponse:
 async def _call_openai(req: LLMRequest) -> LLMResponse:
     client = openai.AsyncOpenAI(max_retries=0)
 
-    messages: list[dict] = []
+    input_items: list[dict] = []
     for m in req.messages:
         if m.role == "tool":
-            messages.append({"role": "tool", "tool_call_id": m.tool_call_id,
-                             "content": m.content})
-        elif m.role == "assistant" and m.tool_calls:
-            messages.append({
-                "role": "assistant",
-                "content": m.content or None,
-                "tool_calls": [{"id": c.id, "type": "function",
-                                "function": {"name": c.name, "arguments": json.dumps(c.args)}}
-                               for c in m.tool_calls],
-            })
+            input_items.append({"type": "function_call_output",
+                                "call_id": m.tool_call_id, "output": m.content})
+        elif m.role == "assistant" and m.provider_items:
+            # Replay the exact output, including encrypted reasoning items,
+            # so reasoning survives the next function-call round with store=False.
+            input_items.extend(m.provider_items)
         else:
-            messages.append({"role": m.role, "content": m.content})
+            if m.content:
+                input_items.append({"role": m.role, "content": m.content})
+            for c in m.tool_calls:
+                input_items.append({"type": "function_call", "call_id": c.id,
+                                    "name": c.name, "arguments": json.dumps(c.args)})
 
-    tools = [{"type": "function",
-              "function": {"name": t["name"], "description": t["description"],
-                           "parameters": t["input_schema"]}}
+    tools = [{"type": "function", "name": t["name"],
+              "description": t["description"], "parameters": t["input_schema"],
+              "strict": False}
              for t in TOOLS]
 
     try:
-        resp = await client.chat.completions.create(
-            model=config.OPENAI_MODEL, messages=messages, tools=tools
+        resp = await client.responses.create(
+            model=config.OPENAI_MODEL,
+            input=input_items,
+            tools=tools,
+            store=False,
+            include=["reasoning.encrypted_content"],
         )
     except (openai.BadRequestError, openai.AuthenticationError,
             openai.PermissionDeniedError, openai.NotFoundError) as e:
         raise ApplicationError(f"LLM request rejected: {e}", non_retryable=True) from e
 
-    choice = resp.choices[0].message
-    calls = [ToolCall(id=c.id, name=c.function.name, args=json.loads(c.function.arguments))
-             for c in (choice.tool_calls or [])]
-    return LLMResponse(message=ChatMessage(role="assistant", content=choice.content or "",
-                                           tool_calls=calls))
+    calls = [ToolCall(id=item.call_id, name=item.name,
+                      args=json.loads(item.arguments))
+             for item in resp.output if item.type == "function_call"]
+    provider_items = [item.model_dump(mode="json", exclude_none=True)
+                      for item in resp.output]
+    return LLMResponse(message=ChatMessage(
+        role="assistant",
+        content=resp.output_text,
+        tool_calls=calls,
+        provider_items=provider_items,
+    ))
