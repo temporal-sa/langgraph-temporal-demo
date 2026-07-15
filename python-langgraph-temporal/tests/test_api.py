@@ -14,8 +14,8 @@ class FakeHandle:
             approval_id="approval-123", track_ids=[3], description="A track"
         )
 
-    async def execute_update(self, *args):
-        self.update_calls.append(args)
+    async def execute_update(self, *args, **kwargs):
+        self.update_calls.append((args, kwargs))
 
 
 class ApiApprovalTests(unittest.IsolatedAsyncioTestCase):
@@ -50,6 +50,8 @@ class ApiApprovalTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response, {})
         self.assertEqual(len(handle.update_calls), 1)
-        _, approval_id, decision = handle.update_calls[0]
+        args, kwargs = handle.update_calls[0]
+        self.assertEqual(args, (api.SupportAgentWorkflow.approve_purchase,))
+        approval_id, decision = kwargs["args"]
         self.assertEqual(approval_id, "approval-123")
         self.assertTrue(decision.approved)

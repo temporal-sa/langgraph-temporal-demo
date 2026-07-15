@@ -100,6 +100,20 @@ Use the same repo-root `.env` values as the original demo:
 
 Conversations are process-local. Restarting the API clears them.
 
+## Human approval
+
+Purchases use [LangGraph's native human-in-the-loop API][langgraph-interrupts].
+The tools node calls `interrupt()` with a JSON-serializable purchase request,
+and the approval endpoint resumes the same LangGraph thread with
+`Command(resume=...)`. A session-local `InMemorySaver` supplies checkpointing
+for this intentionally process-local implementation.
+
+The graph collects all purchase decisions before running any tool calls. Since
+LangGraph restarts an interrupted node from the beginning, this keeps tool side
+effects after every interrupt and avoids repeating earlier calls on resume.
+
+[langgraph-interrupts]: https://docs.langchain.com/oss/python/langgraph/interrupts
+
 ## Simulate OpenAI API Failures
 
 Set `OPENAI_FAILURE_RATE` when starting the app to randomly fail OpenAI planning

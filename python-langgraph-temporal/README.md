@@ -7,6 +7,22 @@ with `temporalio.contrib.langgraph.graph(...)`.
 
 The HTTP contract matches the other demo backends.
 
+## Native LangGraph human approval
+
+The purchase path is ordinary LangGraph HITL code: the tools node calls
+`interrupt()` with the pending purchase, and the Temporal Workflow resumes the
+same graph thread with `Command(resume=...)`. The graph does not carry custom
+pending-call, remaining-call, or resume-routing fields.
+
+The Workflow compiles the registered graph with a workflow-local
+`InMemorySaver`, following the [Temporal Python SDK LangGraph interrupt
+sample][temporal-langgraph-interrupt]. Temporal Workflow history remains the
+durability boundary while the adapter replays the LangGraph checkpoint
+operations. This lets the LangGraph HITL pattern run on Temporal without
+replacing it with signals or custom graph routing.
+
+[temporal-langgraph-interrupt]: https://github.com/temporalio/sdk-python/blob/main/tests/contrib/langgraph/test_interrupt.py
+
 ## Run
 
 Use separate terminals from the repository root.
