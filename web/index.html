@@ -85,6 +85,17 @@
   .switch input:checked + .switch-track { background: var(--purple); }
   .switch input:checked + .switch-track::after { transform: translateX(18px); background: #fff; }
   .switch input:disabled + .switch-track { cursor: default; }
+  .control-danger {
+    display: block; width: 100%; margin-top: 14px; padding: 14px; text-align: left;
+    color: var(--red); background: transparent; border: 1px solid color-mix(in srgb, var(--red) 55%, transparent);
+    border-radius: 14px; cursor: pointer; font: inherit; transition: background .15s ease, border-color .15s ease;
+  }
+  .control-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--red) 10%, transparent); border-color: var(--red);
+  }
+  .control-danger:disabled, .control-danger.unavailable { opacity: .45; cursor: default; }
+  .control-danger strong { display: block; font-size: 14px; }
+  .control-danger span { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   #controls-message { min-height: 20px; color: var(--muted); font-size: 12px; margin: 14px 2px; }
   #controls-message.error { color: var(--red); }
 
@@ -276,6 +287,11 @@
       </span>
     </label>
   </div>
+
+  <button id="control-end-workflow" class="control-danger" type="button" disabled>
+    <strong>End workflow</strong>
+    <span id="control-end-workflow-copy">Cancel the active Temporal workflow and return to start.</span>
+  </button>
 
   <div id="controls-message" role="status"></div>
 </aside>

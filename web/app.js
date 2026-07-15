@@ -281,6 +281,15 @@ function renderDemoControls(controls) {
   setControlAvailable('control-row-app', 'control-app', Boolean(capabilities.langGraphApp));
   setControlAvailable('control-row-worker', 'control-worker', Boolean(capabilities.worker));
 
+  const canEndWorkflow = Boolean(capabilities.endWorkflow && conversationId);
+  $('control-end-workflow').disabled = controlsLoading || !canEndWorkflow;
+  $('control-end-workflow').classList.toggle('unavailable', !capabilities.endWorkflow);
+  $('control-end-workflow-copy').textContent = !capabilities.endWorkflow
+    ? 'Only Temporal-backed implementations have a workflow to end.'
+    : conversationId
+      ? 'Cancel the active Temporal workflow and return to start.'
+      : 'Start a conversation to enable this action.';
+
   const injecting =
     controls.randomOpenAIFailures ||
     controls.openAIResponsesOutage ||
@@ -296,6 +305,8 @@ function setControlsLoading(loading) {
   $('control-openai').disabled = loading;
   $('control-app').disabled = loading || !capabilities.langGraphApp;
   $('control-worker').disabled = loading || !capabilities.worker;
+  $('control-end-workflow').disabled =
+    loading || !capabilities.endWorkflow || !conversationId;
 }
 
 async function loadDemoControls() {
@@ -329,6 +340,22 @@ async function updateDemoControl(field, enabled) {
   }
 }
 
+async function endActiveWorkflow() {
+  if (!conversationId || !demoControls?.capabilities?.endWorkflow) return;
+  if (!window.confirm('End this workflow? This cannot be undone.')) return;
+
+  setControlsLoading(true);
+  setControlsMessage('Ending workflow…');
+  try {
+    await call('POST', `/conversations/${conversationId}/end`);
+    window.location.reload();
+  } catch (error) {
+    setControlsLoading(false);
+    if (demoControls) renderDemoControls(demoControls);
+    setControlsMessage(error.message, { error: true });
+  }
+}
+
 function setControlsOpen(open) {
   controlsOpen = open;
   $('controls-panel').classList.toggle('open', open);
@@ -350,6 +377,7 @@ function setupDemoControls() {
     updateDemoControl('langGraphAppEnabled', event.target.checked);
   $('control-worker').onchange = (event) =>
     updateDemoControl('workerEnabled', event.target.checked);
+  $('control-end-workflow').onclick = endActiveWorkflow;
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && controlsOpen) setControlsOpen(false);
   });
@@ -490,6 +518,7 @@ $('start-form').onsubmit = async (e) => {
       customerEmail: $('email').value.trim(),
     });
     conversationId = id;
+    if (demoControls) renderDemoControls(demoControls);
     showConversationId(id);
     $('start').remove();
     setBusy(false);

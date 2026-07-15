@@ -46,6 +46,8 @@ the currently selected implementation:
   process-local conversations, matching an app loss.
 - Turn either Temporal worker on or off. Disabling stops its poller; enabling
   starts a fresh poller so durable work can resume.
+- End the active workflow for either Temporal-backed implementation and return
+  the UI to the start screen.
 
 Control state is stored in the shared Postgres database so the API and worker
 components observe the same settings. The control endpoint stays available

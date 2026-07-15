@@ -99,7 +99,11 @@ def _control_payload(controls: DemoControlState) -> dict:
         "openAIResponsesOutage": controls.openai_responses_outage,
         "langGraphAppEnabled": controls.langgraph_app_enabled,
         "workerEnabled": None,
-        "capabilities": {"langGraphApp": True, "worker": False},
+        "capabilities": {
+            "langGraphApp": True,
+            "worker": False,
+            "endWorkflow": False,
+        },
     }
 
 
