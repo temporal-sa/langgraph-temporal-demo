@@ -4,6 +4,9 @@
 #   make original            original Temporal workflow backend only
 #   make langgraph           standalone LangGraph backend only
 #   make temporal-langgraph  Temporal + LangGraph backend only
+#   make restart-langgraph-api  restart standalone LangGraph; checkpoints survive
+#   make test-postgres       run live checkpoint recovery tests
+#   make check               run every test and static validation
 #   make down                stop everything this Makefile started
 #   make status              what's running
 #
@@ -31,10 +34,11 @@ TEMPORAL_LANGGRAPH_WORKER_LOG := /tmp/agent-temporal-langgraph-worker.log
 TEMPORAL_LANGGRAPH_API_LOG := /tmp/agent-temporal-langgraph-api.log
 WEB_LOG := /tmp/agent-web.log
 
-.PHONY: up compose-up compose-down original langgraph temporal-langgraph down status logs test \
+.PHONY: up compose-up compose-down original langgraph temporal-langgraph down status logs \
+	test test-postgres check \
 	postgres temporal worker api langgraph-api temporal-langgraph-worker \
 	temporal-langgraph-api web kill-worker kill-temporal-langgraph-worker \
-	kill-langgraph-api kill-workers kill-db db
+	kill-langgraph-api restart-langgraph-api kill-workers kill-db db
 
 up:
 	@$(MAKE) --no-print-directory postgres
@@ -62,7 +66,20 @@ temporal-langgraph: postgres temporal temporal-langgraph-worker temporal-langgra
 	@echo "Temporal + LangGraph backend ready: http://localhost:$(TEMPORAL_LANGGRAPH_API_PORT)"
 
 postgres:
-	docker compose up -d postgres
+	@if docker inspect chinook-postgres >/dev/null 2>&1; then \
+		docker start chinook-postgres >/dev/null; \
+	else \
+		docker compose up -d postgres; \
+	fi
+	@for attempt in $$(seq 1 60); do \
+		if docker exec chinook-postgres pg_isready -q >/dev/null 2>&1; then \
+			echo "postgres ready (:5432)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "postgres did not become ready"; \
+	exit 1
 
 compose-up:
 	docker compose up --build -d
@@ -96,13 +113,27 @@ api:
 		echo "original Temporal gateway started (:$(ORIGINAL_API_PORT))"; \
 	fi
 
-langgraph-api:
+langgraph-api: postgres
 	@if [ -s "$(LANGGRAPH_API_PID)" ] && kill -0 "$$(cat "$(LANGGRAPH_API_PID)")" 2>/dev/null; then \
 		echo "standalone LangGraph gateway already running (:$(LANGGRAPH_API_PORT))"; \
 	else \
 		(nohup sh -c 'cd python-langgraph && exec uv run python -m uvicorn api:app --port $(LANGGRAPH_API_PORT)' > "$(LANGGRAPH_API_LOG)" 2>&1 & echo $$! > "$(LANGGRAPH_API_PID)"); \
-		echo "standalone LangGraph gateway started (:$(LANGGRAPH_API_PORT))"; \
+		echo "standalone LangGraph gateway starting (:$(LANGGRAPH_API_PORT))"; \
 	fi
+	@for attempt in $$(seq 1 40); do \
+		if curl --fail --silent "http://localhost:$(LANGGRAPH_API_PORT)/" >/dev/null; then \
+			echo "standalone LangGraph gateway ready (:$(LANGGRAPH_API_PORT))"; \
+			exit 0; \
+		fi; \
+		if ! [ -s "$(LANGGRAPH_API_PID)" ] || ! kill -0 "$$(cat "$(LANGGRAPH_API_PID)")" 2>/dev/null; then \
+			echo "standalone LangGraph gateway failed to start; see $(LANGGRAPH_API_LOG)"; \
+			tail -n 20 "$(LANGGRAPH_API_LOG)" 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		sleep 0.25; \
+	done; \
+	echo "standalone LangGraph gateway did not become ready; see $(LANGGRAPH_API_LOG)"; \
+	exit 1
 
 temporal-langgraph-worker:
 	@if [ -s "$(TEMPORAL_LANGGRAPH_WORKER_PID)" ] && kill -0 "$$(cat "$(TEMPORAL_LANGGRAPH_WORKER_PID)")" 2>/dev/null; then \
@@ -142,7 +173,12 @@ kill-temporal-langgraph-worker:
 kill-langgraph-api:
 	-@[ -s "$(LANGGRAPH_API_PID)" ] && kill "$$(cat "$(LANGGRAPH_API_PID)")" 2>/dev/null || true
 	@rm -f "$(LANGGRAPH_API_PID)"
-	@echo "standalone LangGraph API killed - restart with: make langgraph-api"
+	@echo "standalone LangGraph API killed; Postgres checkpoints preserved"
+	@echo "restart with: make langgraph-api, then resume the interrupted turn in the UI"
+
+restart-langgraph-api:
+	@$(MAKE) --no-print-directory kill-langgraph-api
+	@$(MAKE) --no-print-directory langgraph-api
 
 kill-workers: kill-worker kill-temporal-langgraph-worker
 
@@ -151,8 +187,7 @@ kill-db:
 	docker kill chinook-postgres
 	@echo "database killed - restore with: make db"
 
-db:
-	docker start chinook-postgres
+db: postgres
 	@echo "database back"
 
 down:
@@ -185,7 +220,16 @@ logs:
 		"$(TEMPORAL_LANGGRAPH_API_LOG)" "$(WEB_LOG)" 2>/dev/null
 
 test:
-
 	@cd python && uv run --frozen python -m unittest discover -s tests
 	@cd python-langgraph && uv run --frozen python -m unittest discover -s tests
 	@cd python-langgraph-temporal && uv run --frozen python -m unittest discover -s tests
+
+test-postgres: postgres
+	@cd python-langgraph && RUN_POSTGRES_INTEGRATION=1 uv run --frozen \
+		python -m unittest tests.test_postgres_checkpoint -v
+
+check: test test-postgres
+	@docker compose config --quiet
+	@cd python-langgraph && uv run --frozen python -m compileall -q .
+	@node --check web/app.js
+	@git diff --check

@@ -6,8 +6,6 @@ model-visible tool results so the agent can explain them.
 
 import json
 
-import psycopg
-
 import db
 from models.types import ToolRequest
 
@@ -41,15 +39,4 @@ def execute_tool(req: ToolRequest) -> str:
             raise ValueError(f"Unknown tool: {name}")
     except ValueError as e:
         return json.dumps({"error": str(e)})  # business error -> the model handles it
-    except psycopg.OperationalError as e:
-        return json.dumps(
-            {
-                "error": "The music-store database is unavailable.",
-                "detail": e.__class__.__name__,
-                "operator_hint": (
-                    "Start the local Postgres demo database from the repository root "
-                    "with `docker compose up -d`, or set DB_URL to a reachable database."
-                ),
-            }
-        )
     return json.dumps(result, default=str)

@@ -9,6 +9,8 @@ let conversationId = null;
 let activeBackendId = null;
 let activeBackend = null;
 let approvalPending = false;
+let turnInterrupted = false;
+let conversationStatus = null;
 let demoControls = null;
 let controlsOpen = false;
 let controlsLoading = false;
@@ -224,8 +226,26 @@ function renderTranscript(messages) {
   for (const m of messages) addMsg(m.role, m.content);
 }
 
+function renderConversationStatus(status) {
+  conversationStatus = status;
+  turnInterrupted = status?.status === 'interrupted';
+  $('chat').querySelector('.recovery-card')?.remove();
+  if (turnInterrupted) {
+    const card = document.createElement('div');
+    card.className = 'recovery-card';
+    card.innerHTML = `
+      <div class="title">Checkpoint recovered; execution stopped</div>
+      <div class="desc">The user input is durable in Postgres, but this self-hosted app needs an explicit invocation to continue.</div>
+      <button class="pill" type="button">Resume turn</button>`;
+    card.querySelector('button').onclick = resumeInterruptedTurn;
+    $('chat').appendChild(card);
+  }
+  setBusy(false);
+  if (demoControls) renderDemoControls(demoControls);
+}
+
 function setBusy(busy, label) {
-  const composerDisabled = busy || approvalPending;
+  const composerDisabled = busy || approvalPending || turnInterrupted;
   $('input').disabled = composerDisabled;
   $('send').disabled = composerDisabled;
   const t = $('chat').querySelector('.typing');
@@ -281,6 +301,21 @@ function renderDemoControls(controls) {
   setControlAvailable('control-row-app', 'control-app', Boolean(capabilities.langGraphApp));
   setControlAvailable('control-row-worker', 'control-worker', Boolean(capabilities.worker));
 
+  const canResume = Boolean(
+    capabilities.resumeTurn &&
+      conversationId &&
+      controls.langGraphAppEnabled !== false &&
+      conversationStatus?.resumable,
+  );
+  $('control-resume-turn').disabled = controlsLoading || !canResume;
+  $('control-resume-copy').textContent = !capabilities.resumeTurn
+    ? 'Manual turn recovery is available only for standalone LangGraph.'
+    : !conversationId
+      ? 'Start a conversation to demonstrate manual recovery.'
+      : conversationStatus?.resumable
+        ? 'The checkpoint is durable, but no process is running this turn.'
+        : 'Kill the standalone app during a turn to enable manual recovery.';
+
   const injecting =
     controls.randomOpenAIFailures ||
     controls.openAIResponsesOutage ||
@@ -296,6 +331,23 @@ function setControlsLoading(loading) {
   $('control-openai').disabled = loading;
   $('control-app').disabled = loading || !capabilities.langGraphApp;
   $('control-worker').disabled = loading || !capabilities.worker;
+  $('control-resume-turn').disabled =
+    loading || !capabilities.resumeTurn || !conversationStatus?.resumable;
+}
+
+async function refreshConversationFromCheckpoint() {
+  if (!conversationId || demoControls?.langGraphAppEnabled === false) return;
+  const capabilities = demoControls?.capabilities || {};
+  if (!capabilities.resumeTurn) return;
+  const [{ messages }, { pending }, status] = await Promise.all([
+    call('GET', `/conversations/${conversationId}/transcript`),
+    call('GET', `/conversations/${conversationId}/pending-approval`),
+    call('GET', `/conversations/${conversationId}/status`),
+  ]);
+  renderTranscript(messages);
+  approvalPending = Boolean(pending);
+  if (pending) showApprovalCard(pending);
+  renderConversationStatus(status);
 }
 
 async function loadDemoControls() {
@@ -306,6 +358,7 @@ async function loadDemoControls() {
     demoControls = controls;
     setControlsLoading(false);
     renderDemoControls(controls);
+    await refreshConversationFromCheckpoint();
     setControlsMessage('Controls are applied to this backend immediately.');
   } catch (error) {
     setControlsLoading(false);
@@ -321,11 +374,38 @@ async function updateDemoControl(field, enabled) {
     demoControls = controls;
     setControlsLoading(false);
     renderDemoControls(controls);
+    if (field === 'langGraphAppEnabled' && enabled) {
+      await refreshConversationFromCheckpoint();
+    } else if (field === 'langGraphAppEnabled' && !enabled) {
+      conversationStatus = null;
+      turnInterrupted = false;
+      $('chat').querySelector('.recovery-card')?.remove();
+    }
     setControlsMessage('Control updated.');
   } catch (error) {
     setControlsLoading(false);
     if (demoControls) renderDemoControls(demoControls);
     setControlsMessage(error.message, { error: true });
+  }
+}
+
+async function resumeInterruptedTurn() {
+  if (!conversationId || !conversationStatus?.resumable) return;
+  setControlsLoading(true);
+  setControlsMessage('Manually invoking the saved LangGraph thread…');
+  setBusy(true, 'resuming saved checkpoint…');
+  try {
+    await call('POST', `/conversations/${conversationId}/resume`);
+    await refreshConversationFromCheckpoint();
+    setControlsLoading(false);
+    if (demoControls) renderDemoControls(demoControls);
+    setControlsMessage('Interrupted turn resumed explicitly.');
+  } catch (error) {
+    setBusy(false);
+    setControlsLoading(false);
+    if (demoControls) renderDemoControls(demoControls);
+    setControlsMessage(error.message, { error: true });
+    showError(error.message);
   }
 }
 
@@ -350,6 +430,7 @@ function setupDemoControls() {
     updateDemoControl('langGraphAppEnabled', event.target.checked);
   $('control-worker').onchange = (event) =>
     updateDemoControl('workerEnabled', event.target.checked);
+  $('control-resume-turn').onclick = resumeInterruptedTurn;
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && controlsOpen) setControlsOpen(false);
   });
@@ -444,6 +525,7 @@ async function pollUntilSettled(baselineAssistant) {
     if (pending) {
       renderTranscript(messages);
       showApprovalCard(pending);
+      await refreshConversationFromCheckpoint();
       setBusy(false);
       return;
     }
@@ -451,6 +533,7 @@ async function pollUntilSettled(baselineAssistant) {
     if (serverCount > baselineAssistant) {
       renderTranscript(messages);
       approvalPending = false;
+      await refreshConversationFromCheckpoint();
       setBusy(false);
       return;
     }
@@ -475,9 +558,19 @@ $('composer').onsubmit = async (e) => {
       const { pending } = await call('GET', `/conversations/${conversationId}/pending-approval`);
       if (pending) showApprovalCard(pending);
     }
+    if (demoControls?.capabilities?.resumeTurn) {
+      await refreshConversationFromCheckpoint();
+    }
     setBusy(false);
   } catch (err) {
     setBusy(false);
+    if (
+      conversationId &&
+      demoControls?.capabilities?.resumeTurn &&
+      demoControls.langGraphAppEnabled !== false
+    ) {
+      await refreshConversationFromCheckpoint().catch(() => {});
+    }
     showError(err.message);
   }
 };
@@ -490,6 +583,9 @@ $('start-form').onsubmit = async (e) => {
       customerEmail: $('email').value.trim(),
     });
     conversationId = id;
+    conversationStatus = { status: 'idle', resumable: false };
+    turnInterrupted = false;
+    if (demoControls) renderDemoControls(demoControls);
     showConversationId(id);
     $('start').remove();
     setBusy(false);

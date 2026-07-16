@@ -1,25 +1,33 @@
-"""HTTP gateway for the standalone LangGraph support agent.
+"""HTTP gateway for checkpoint-backed, self-hosted LangGraph.
 
-Conversations are held in this process. Run one API process for the demo, or
-replace ConversationStore with durable storage before scaling horizontally.
+Conversation state survives process loss in Postgres. Graph execution still
+belongs to this API process, so an interrupted turn requires an explicit resume.
 
     uv run uvicorn api:app --port 8001
 """
 
 import asyncio
 from contextlib import asynccontextmanager
+from typing import NoReturn
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from pydantic import BaseModel
 
 import config
+from checkpointing import strict_checkpoint_serializer
 from graph.agent import (
-    ConversationStore,
+    AgentRunError,
     NoPendingApprovalError,
     PendingApprovalError,
     StaleApprovalError,
+    SupportAgentService,
+    TurnInProgressError,
+    TurnNotResumableError,
+    UnknownConversationError,
+    build_graph,
 )
 from models.types import ApprovalDecision
 from support_agent_common.conversations import new_conversation_id
@@ -37,8 +45,19 @@ ENABLED_RANDOM_FAILURE_RATE = 0.5
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.conversations = ConversationStore()
-    yield
+    async with AsyncPostgresSaver.from_conn_string(
+        config.DB_URL,
+        serde=strict_checkpoint_serializer(),
+    ) as checkpointer:
+        await checkpointer.setup()
+        app.state.graph = build_graph(checkpointer)
+        app.state.agent = SupportAgentService(app.state.graph)
+        try:
+            yield
+        finally:
+            agent = getattr(app.state, "agent", None)
+            if agent is not None:
+                await agent.simulate_crash()
 
 
 app = FastAPI(title="support-agent LangGraph gateway", lifespan=lifespan)
@@ -72,15 +91,32 @@ class DemoControlUpdate(BaseModel):
     langGraphAppEnabled: bool | None = None
 
 
-def _store() -> ConversationStore:
-    return app.state.conversations
+def _agent() -> SupportAgentService:
+    return app.state.agent
 
 
-def _session(conversation_id: str):
-    try:
-        return _store().get(conversation_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail="unknown conversation") from e
+def _replace_agent() -> SupportAgentService:
+    app.state.agent = SupportAgentService(app.state.graph)
+    return app.state.agent
+
+
+def _raise_agent_error(error: Exception) -> NoReturn:
+    if isinstance(error, UnknownConversationError):
+        raise HTTPException(status_code=404, detail="unknown conversation") from error
+    if isinstance(
+        error,
+        (
+            NoPendingApprovalError,
+            PendingApprovalError,
+            StaleApprovalError,
+            TurnInProgressError,
+            TurnNotResumableError,
+        ),
+    ):
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if isinstance(error, (AgentRunError, DemoOpenAIError)):
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    raise error
 
 
 def _load_controls() -> DemoControlState:
@@ -99,7 +135,11 @@ def _control_payload(controls: DemoControlState) -> dict:
         "openAIResponsesOutage": controls.openai_responses_outage,
         "langGraphAppEnabled": controls.langgraph_app_enabled,
         "workerEnabled": None,
-        "capabilities": {"langGraphApp": True, "worker": False},
+        "capabilities": {
+            "langGraphApp": True,
+            "worker": False,
+            "resumeTurn": True,
+        },
     }
 
 
@@ -116,13 +156,18 @@ async def _require_app_enabled() -> None:
 async def root():
     return {
         "service": "support-agent gateway (python-langgraph)",
-        "hint": "This is the API. Open the chat UI: cd web && python3 -m http.server 5173",
+        "hint": (
+            "This is the API. Open the chat UI: "
+            "cd web && python3 -m http.server 5173"
+        ),
         "endpoints": [
             "POST /conversations",
             "POST /conversations/{id}/messages",
             "GET  /conversations/{id}/transcript",
             "GET  /conversations/{id}/pending-approval",
+            "GET  /conversations/{id}/status",
             "POST /conversations/{id}/approve",
+            "POST /conversations/{id}/resume",
         ],
     }
 
@@ -150,8 +195,16 @@ async def set_demo_controls(body: DemoControlUpdate):
         langgraph_app_enabled=body.langGraphAppEnabled,
         initial_failure_rate=config.OPENAI_FAILURE_RATE,
     )
-    if body.langGraphAppEnabled is False and hasattr(app.state, "conversations"):
-        app.state.conversations = ConversationStore()
+    if body.langGraphAppEnabled is False:
+        agent = getattr(app.state, "agent", None)
+        if agent is not None:
+            await agent.simulate_crash()
+        app.state.agent = None
+    elif (
+        body.langGraphAppEnabled is True
+        and getattr(app.state, "agent", None) is None
+    ):
+        _replace_agent()
     return _control_payload(controls)
 
 
@@ -159,7 +212,7 @@ async def set_demo_controls(body: DemoControlUpdate):
 async def create_conversation(body: CreateConversation):
     await _require_app_enabled()
     conversation_id = new_conversation_id(body.customerEmail)
-    _store().create(conversation_id, body.customerEmail)
+    await _agent().create(conversation_id, body.customerEmail)
     return {"conversationId": conversation_id}
 
 
@@ -167,25 +220,29 @@ async def create_conversation(body: CreateConversation):
 async def send_message(conversation_id: str, body: SendMessage):
     await _require_app_enabled()
     try:
-        result = await _session(conversation_id).send_message(body.text)
-    except PendingApprovalError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    except DemoOpenAIError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+        result = await _agent().send_message(conversation_id, body.text)
+    except Exception as error:
+        _raise_agent_error(error)
     return {"status": result.status, "reply": result.reply}
 
 
 @app.get("/conversations/{conversation_id}/transcript")
 async def transcript(conversation_id: str):
     await _require_app_enabled()
-    messages = _session(conversation_id).transcript()
+    try:
+        messages = await _agent().transcript(conversation_id)
+    except Exception as error:
+        _raise_agent_error(error)
     return {"messages": [{"role": m.role, "content": m.content} for m in messages]}
 
 
 @app.get("/conversations/{conversation_id}/pending-approval")
 async def pending_approval(conversation_id: str):
     await _require_app_enabled()
-    pending = _session(conversation_id).pending_approval()
+    try:
+        pending = await _agent().pending_approval(conversation_id)
+    except Exception as error:
+        _raise_agent_error(error)
     if pending is None:
         return {"pending": None}
     return {
@@ -197,16 +254,34 @@ async def pending_approval(conversation_id: str):
     }
 
 
+@app.get("/conversations/{conversation_id}/status")
+async def conversation_status(conversation_id: str):
+    await _require_app_enabled()
+    try:
+        return await _agent().status(conversation_id)
+    except Exception as error:
+        _raise_agent_error(error)
+
+
 @app.post("/conversations/{conversation_id}/approve", status_code=202)
 async def approve(conversation_id: str, body: Approve):
     await _require_app_enabled()
     try:
-        result = await _session(conversation_id).approve_purchase(
+        result = await _agent().approve_purchase(
+            conversation_id,
             body.approvalId,
             ApprovalDecision(approved=body.approved, reason=body.reason),
         )
-    except (NoPendingApprovalError, StaleApprovalError) as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
-    except DemoOpenAIError as e:
-        raise HTTPException(status_code=503, detail=str(e)) from e
+    except Exception as error:
+        _raise_agent_error(error)
+    return {"status": result.status, "reply": result.reply}
+
+
+@app.post("/conversations/{conversation_id}/resume")
+async def resume(conversation_id: str):
+    await _require_app_enabled()
+    try:
+        result = await _agent().resume(conversation_id)
+    except Exception as error:
+        _raise_agent_error(error)
     return {"status": result.status, "reply": result.reply}
