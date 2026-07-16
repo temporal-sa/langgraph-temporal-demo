@@ -1,8 +1,8 @@
 # Support Agent with LangGraph
 
-This folder is a standalone LangGraph version of the music-store support agent.
-LangGraph runs the ReAct loop in process, and the API keeps demo conversation
-state in memory.
+This folder is the self-hosted standalone LangGraph version of the music-store
+support agent. LangGraph runs the ReAct loop in the FastAPI process and stores
+thread checkpoints in Postgres through `AsyncPostgresSaver`.
 
 ## Run
 
@@ -98,20 +98,43 @@ Use the same repo-root `.env` values as the original demo:
 - `DB_URL`
 - `OPENAI_FAILURE_RATE` to simulate OpenAI API failures when `LLM_PROVIDER=openai`
 
-Conversations are process-local. Restarting the API clears them.
+Conversation and interrupt state survive API restarts. Active execution does
+not: a process that disappears mid-node leaves a resumable checkpoint with no
+runner. `POST /conversations/{id}/resume` explicitly continues that thread.
+
+## Persistence is not a scheduler
+
+The graph uses native LangGraph retry policies and node timeouts. While the API
+process is alive, transient plan/tool failures are retried up to three times.
+If the process dies, Postgres still contains the last checkpoint, but no
+external service automatically invokes the graph again. The status endpoint
+reports that distinction:
+
+```text
+GET  /conversations/{id}/status  -> idle | running | awaiting_approval | interrupted
+POST /conversations/{id}/resume  -> explicitly invoke an interrupted thread
+```
+
+This is a comparison with self-hosted open-source LangGraph, not LangGraph
+Platform. LangSmith tracing can provide LangGraph attempt observability when it
+is configured; Temporal's comparison point is its service-owned event history,
+task queues, and automatic worker recovery.
 
 ## Human approval
 
 Purchases use [LangGraph's native human-in-the-loop API][langgraph-interrupts].
 The tools node calls `interrupt()` with a JSON-serializable purchase request,
-and the approval endpoint resumes the same LangGraph thread with
-`Command(resume=...)`. A session-local `InMemorySaver` supplies checkpointing
-for this intentionally process-local implementation.
+and the approval endpoint resumes the same Postgres-backed LangGraph thread
+with `Command(resume=...)`.
 
 The graph executes one tool call per `tools` node invocation. Purchase requests
 also carry an idempotency key derived from the conversation ID and tool-call ID,
 so a repeated execution reads the original invoice instead of inserting a
 second purchase.
+
+Temporal Activities are also at-least-once, so both implementations must make
+external writes idempotent. Temporal owns durable retry scheduling and attempt
+history; it does not make a database insert exactly-once by itself.
 
 [langgraph-interrupts]: https://docs.langchain.com/oss/python/langgraph/interrupts
 

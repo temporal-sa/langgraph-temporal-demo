@@ -31,9 +31,23 @@ make down     # Stop everything started by make up.
 ```
 
 To run only one implementation, use `make original`, `make langgraph`, or
-`make temporal-langgraph`. The first and third variants demonstrate durable
-execution; try `make kill-worker`, continue/restart with `make worker`, and
-observe the conversation resume from persisted workflow state.
+`make temporal-langgraph`. The comparison deliberately gives standalone
+LangGraph a production Postgres checkpointer. The demo is about the difference
+between durable state and an external durable execution service:
+
+| Behavior | Self-hosted LangGraph + Postgres | Temporal-backed LangGraph |
+| --- | --- | --- |
+| Conversation and HITL checkpoint survive restart | Yes | Yes |
+| Retry and node timeout policies | LangGraph policy, driven by the API process | Temporal Activity policy, driven by Temporal |
+| Process dies during a turn | Checkpoint remains; explicitly invoke `resume` | A worker automatically continues from Workflow history |
+| Attempt visibility | Application logs or optional LangSmith tracing | Temporal event history and UI |
+| External side-effect safety | Application idempotency required | Application idempotency required |
+
+This compares the self-hosted open-source LangGraph runtime in this repository,
+not LangGraph Platform. Try `make kill-langgraph-api` during a standalone turn,
+restart with `make langgraph-api`, and manually resume its saved checkpoint. For
+Temporal, kill a worker and restart it; no client or operator resume call is
+needed.
 
 Purchases remain safe during that failure demo. Each purchase uses an
 idempotency key derived from the workflow/conversation ID and LLM tool-call ID;
@@ -48,8 +62,9 @@ the currently selected implementation:
 
 - Enable random OpenAI planning failures.
 - Turn the OpenAI Responses API on or off.
-- Turn the standalone LangGraph app on or off. Disabling it clears its
-  process-local conversations, matching an app loss.
+- Turn the standalone LangGraph app on or off. Disabling it stops in-flight
+  execution but preserves the thread checkpoint in Postgres. Re-enable the app
+  and use **Resume interrupted turn** to make the recovery invocation explicit.
 - Turn either Temporal worker on or off. Disabling stops its poller; enabling
   starts a fresh poller so durable work can resume.
 
@@ -81,8 +96,9 @@ tmprl-demo.cloud ingress
 
 Kubernetes never runs a Temporal Server. The two Temporal APIs start, update,
 and query workflows in Temporal Cloud, while their independently restartable
-workers poll separate task queues. Standalone LangGraph keeps conversations in
-its single API replica. All three variants use the same seeded Postgres service.
+workers poll separate task queues. Standalone LangGraph stores checkpoints in
+the shared Postgres service but runs turns in its single API replica. All three
+variants use the same seeded Postgres service.
 
 ## Docker Compose
 

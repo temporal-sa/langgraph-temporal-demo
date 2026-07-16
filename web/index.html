@@ -87,6 +87,15 @@
   .switch input:disabled + .switch-track { cursor: default; }
   #controls-message { min-height: 20px; color: var(--muted); font-size: 12px; margin: 14px 2px; }
   #controls-message.error { color: var(--red); }
+  .control-action {
+    display: block; width: 100%; margin-top: 12px; padding: 14px;
+    text-align: left; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 14px; cursor: pointer;
+  }
+  .control-action strong, .control-action span { display: block; }
+  .control-action span { margin-top: 2px; color: var(--muted); font-size: 12px; }
+  .control-action:enabled:hover { border-color: var(--purple); }
+  .control-action:disabled { opacity: .45; cursor: default; }
 
   main { flex: 1; overflow-y: auto; padding: 48px 24px 24px; }
   #chat { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
@@ -145,6 +154,13 @@
   .approval-card .title { font-weight: 600; margin-bottom: 4px; }
   .approval-card .desc { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
   .approval-card button { margin-right: 8px; }
+  .recovery-card {
+    align-self: flex-start; max-width: 78%; padding: 16px 20px;
+    background: var(--panel); border: 1px solid #80643e;
+    border-left: 3px solid #d39a5b; border-radius: 20px;
+  }
+  .recovery-card .title { font-weight: 600; margin-bottom: 4px; }
+  .recovery-card .desc { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
 
   /* pill composer with round send button, like the reference */
   footer { padding: 16px 24px 28px; flex-shrink: 0; }
@@ -257,7 +273,7 @@
     <label class="control-row" id="control-row-app">
       <span class="control-copy">
         <strong>LangGraph app</strong>
-        <span>Disable request handling and expose in-memory state loss.</span>
+        <span>Stop execution while preserving checkpoints in Postgres.</span>
       </span>
       <span class="switch">
         <input id="control-app" type="checkbox">
@@ -276,6 +292,11 @@
       </span>
     </label>
   </div>
+
+  <button id="control-resume-turn" class="control-action" type="button" disabled>
+    <strong>Resume interrupted turn</strong>
+    <span id="control-resume-copy">Kill the standalone app during a turn to enable manual recovery.</span>
+  </button>
 
   <div id="controls-message" role="status"></div>
 </aside>
