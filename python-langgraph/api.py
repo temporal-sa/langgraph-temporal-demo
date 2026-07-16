@@ -139,6 +139,7 @@ def _control_payload(controls: DemoControlState) -> dict:
             "langGraphApp": True,
             "worker": False,
             "resumeTurn": True,
+            "endWorkflow": False,
         },
     }
 

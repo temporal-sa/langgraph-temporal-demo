@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from api import Approve, approve
+from api import Approve, approve, end_workflow
 from models.types import ApprovalDecision
 from workflows.agent import SupportAgentWorkflow
 
@@ -24,6 +24,15 @@ class ApproveEndpointTests(unittest.IsolatedAsyncioTestCase):
                 ApprovalDecision(approved=True, reason="looks good"),
             ],
         )
+
+    async def test_end_workflow_requests_temporal_cancellation(self) -> None:
+        handle = AsyncMock()
+
+        with patch("api._handle", return_value=handle):
+            result = await end_workflow("conversation-id")
+
+        self.assertEqual(result, {})
+        handle.cancel.assert_awaited_once_with(reason="Ended from demo controls")
 
 
 if __name__ == "__main__":
