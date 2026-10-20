@@ -30,6 +30,8 @@ make logs     # Tail the backend, worker, web, and Temporal logs.
 make down     # Stop everything started by make up.
 ```
 
+To present the demo, follow [RUNBOOK.md](RUNBOOK.md): the walkthrough beat by beat, and where in the code each part happens.
+
 To run only one implementation, use `make original`, `make langgraph`, or
 `make temporal-langgraph`. The comparison deliberately gives standalone
 LangGraph a production Postgres checkpointer. The demo is about the difference
