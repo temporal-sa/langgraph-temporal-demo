@@ -9,6 +9,9 @@ temporal_backend_url="$(js_escape "${TEMPORAL_BACKEND_URL:-}")"
 langgraph_backend_url="$(js_escape "${LANGGRAPH_BACKEND_URL:-}")"
 temporal_langgraph_backend_url="$(js_escape "${TEMPORAL_LANGGRAPH_BACKEND_URL:-/api}")"
 temporal_ui_url="$(js_escape "${TEMPORAL_UI_URL:-}")"
+# tmprl-demo.cloud injects the UI base plus TEMPORAL_UI_NAMESPACE (the qualified Cloud
+# namespace, or a crashable workspace's dev server namespace); local runs use "default".
+temporal_ui_namespace="$(js_escape "${TEMPORAL_UI_NAMESPACE:-default}")"
 default_backend="$(js_escape "${DEFAULT_AGENT_BACKEND:-temporal-langgraph}")"
 
 first_backend=true
@@ -22,7 +25,7 @@ write_separator() {
 
 write_temporal_backend() {
   if [ -n "$temporal_ui_url" ]; then
-    conversation_link_base="${temporal_ui_url}/namespaces/default/workflows"
+    conversation_link_base="${temporal_ui_url%/}/namespaces/${temporal_ui_namespace}/workflows"
   else
     conversation_link_base=""
   fi
@@ -40,7 +43,7 @@ EOF
 
 write_temporal_langgraph_backend() {
   if [ -n "$temporal_ui_url" ]; then
-    conversation_link_base="${temporal_ui_url}/namespaces/default/workflows"
+    conversation_link_base="${temporal_ui_url%/}/namespaces/${temporal_ui_namespace}/workflows"
   else
     conversation_link_base=""
   fi
