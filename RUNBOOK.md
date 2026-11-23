@@ -21,7 +21,7 @@ The demo makes three problems visible:
   ```env
   LLM_PROVIDER=openai
   OPENAI_API_KEY=...
-  OPENAI_MODEL=gpt-4o
+  OPENAI_MODEL=gpt-6-luna
   ```
 
   `.env.example` defaults to Anthropic (`LLM_PROVIDER=anthropic`, `ANTHROPIC_API_KEY`), which is fine for the approval beat. Every turn calls the model, so each run costs a little.

@@ -35,7 +35,7 @@ services:
       DB_URL: postgresql://${POSTGRES_USER:-demo}:${POSTGRES_PASSWORD_URLENCODED:-${POSTGRES_PASSWORD:-demo}}@postgres:5432/${APP_DB_NAME:-chinook}
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
       DEMO_ACCESS_TOKEN: ${DEMO_ACCESS_TOKEN:-}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
     ports:
@@ -67,7 +67,7 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-6-luna}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
