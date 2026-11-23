@@ -36,7 +36,7 @@ def _failure_rate(name: str) -> float:
 # LLM provider
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
 OPENAI_FAILURE_RATE = _failure_rate("OPENAI_FAILURE_RATE")
 
 
